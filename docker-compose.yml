@@ -7,9 +7,12 @@ services:
     ports:
       - "8051:8000"
     depends_on:
-      - redis
-      - postgres
-      - chromadb
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
@@ -28,9 +31,14 @@ services:
     container_name: rag_worker
     command: ["celery", "-A", "ragreader", "worker", "-l", "info"]
     depends_on:
-      - redis
-      - postgres
-      - chromadb
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      backend:
+        condition: service_started
     env_file:
       - ./backend/.env
     environment:
@@ -49,7 +57,8 @@ services:
     ports:
       - "5151:5176"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     env_file:
       - ./frontend/.env
     restart: unless-stopped
@@ -60,6 +69,12 @@ services:
     ports:
       - "6351:6379"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   chromadb:
     image: chromadb/chroma:latest
@@ -67,11 +82,11 @@ services:
     ports:
       - "8002:8000"
     volumes:
-      - chroma_data:/data             # named volume instead of bind mount
+      - chroma_data:/data
     environment:
       - IS_PERSISTENT=TRUE
       - PERSIST_DIRECTORY=/data
-      - CHROMA_SERVER_CORS_ALLOW_ORIGINS=["http://localhost:5176","http://localhost:3000"]
+      - CHROMA_SERVER_CORS_ALLOW_ORIGINS=["http://localhost:5176","http://localhost:3000","http://localhost:5151"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8000/api/v2/heartbeat || exit 1"]
@@ -92,6 +107,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myuser -d crag_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres_data:

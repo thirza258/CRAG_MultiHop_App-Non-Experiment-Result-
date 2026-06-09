@@ -1,0 +1,44 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+*.sqlite
+*.db
+
+# Virtual environments
+venv
+env
+.venv
+
+# IDE / OS
+.idea
+.vscode
+*.DS_Store
+
+# Environment (keep .env.example)
+.env
+.env.*
+
+# Django
+staticfiles
+media
+
+# Models (downloaded at runtime)
+models/
+
+# ChromaDB local data
+chroma-data/
+chroma_db/
+vector_stores/

@@ -1,44 +1,98 @@
 # Corrective + Reranker + RAG 
 ---
 
-## How to Run This App
+## Quick Start (Docker — Recommended)
+
+The easiest way to run the entire stack is with Docker. All services (backend, worker, frontend, PostgreSQL, Redis, ChromaDB) start with a single command.
 
 ### Prerequisites
-- **Python 3.9+** and **npm** installed.
-- **Redis server** installed and running.
+- **Docker** and **Docker Compose v2** installed on your machine.
 
 ### Steps
 
-1. **Start Redis server**  
-   Make sure Redis is running.  
+1. **Clone the repository**
    ```bash
-   # Start your local Redis (example for Linux/macOS):
-   redis-server
-   # Check if Redis is running:
-   redis-cli ping
-   # Should output: PONG
+   git clone <repository-url>
+   cd <repository-name>
    ```
 
-2. **Start Celery worker**  
-   From the backend directory, start a Celery worker for background tasks:  
+2. **Create the backend environment file**
    ```bash
-   celery -A ragreader worker --loglevel=info
+   cp backend/.env.example backend/.env
    ```
+   Edit `backend/.env` and add your LLM API keys (`OPENAI_API_KEY`, etc.) if needed.
 
-3. **Run Django backend**  
-   Start the backend server:  
+3. **Create the frontend environment file**
    ```bash
+   cp frontend/.env.example frontend/.env
+   ```
+   The default values work out of the box for Docker.
+
+4. **Start all services**
+   ```bash
+   docker compose up -d --build
+   ```
+   The first build takes a few minutes (model downloads, package installs). Subsequent starts are fast.
+
+5. **Access the app**
+   Open [http://localhost:5151](http://localhost:5151) in your browser.
+
+### Useful Docker commands
+
+| Command | Description |
+|---------|-------------|
+| `docker compose up -d --build` | Build and start all services in the background |
+| `docker compose logs -f backend` | Follow backend logs |
+| `docker compose logs -f worker` | Follow worker logs |
+| `docker compose down` | Stop all services |
+| `docker compose down -v` | Stop all services and delete volumes (resets DB/ChromaDB) |
+
+### Services and ports
+
+| Service | External Port | Internal Port |
+|---------|--------------|---------------|
+| Frontend (Nginx) | `5151` | `5176` |
+| Backend (Daphne) | `8051` | `8000` |
+| ChromaDB | `8002` | `8000` |
+| PostgreSQL | `5432` | `5432` |
+| Redis | `6351` | `6379` |
+
+---
+
+## Local Development (without Docker)
+
+### Prerequisites
+- **Python 3.11+** and **npm** installed.
+- **PostgreSQL**, **Redis**, and **ChromaDB** servers running locally.
+
+### Steps
+
+1. **Set up the backend**
+   ```bash
+   cd backend
+   python -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   cp .env.example .env  # edit with your local settings
+   python manage.py migrate
    python manage.py runserver
    ```
 
-4. **Run the frontend**  
-   From the frontend directory, start the development server:  
+2. **Start Celery worker** (in a second terminal)
    ```bash
-   npm install     
+   cd backend
+   source venv/bin/activate
+   celery -A ragreader worker --loglevel=info
+   ```
+
+3. **Run the frontend** (in a third terminal)
+   ```bash
+   cd frontend
+   npm install
    npm run dev
    ```
 
-Once all services are running, access the app at [http://localhost:5173](http://localhost:5173) (or as indicated in the terminal).
+Access the app at [http://localhost:5173](http://localhost:5173).
 
 # MultiHop Corrective RAG Pipeline
 
@@ -252,7 +306,7 @@ OPENROUTER_API_KEY=
 ## Docker
 
 ```bash
-docker-compose up --build
+docker compose up -d --build
 ```
 
 ---
