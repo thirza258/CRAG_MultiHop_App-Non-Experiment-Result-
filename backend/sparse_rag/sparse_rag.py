@@ -16,9 +16,9 @@ try:
     nltk.data.find('tokenizers/punkt')
     nltk.data.find('tokenizers/punkt_tab')
 except LookupError:
-    nltk.download('stopwords', quiet=True)
-    nltk.download('punkt', quiet=True)
-    nltk.download('punkt_tab', quiet=True)
+    raise RuntimeError(
+        "Required NLTK data is missing. Rebuild the Docker image."
+    )
     
 logger = logging.getLogger(__name__)
 
