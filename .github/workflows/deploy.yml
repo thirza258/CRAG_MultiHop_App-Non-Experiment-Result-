@@ -1,0 +1,179 @@
+# name: Build and Deploy 
+
+# on:
+#   push:
+#     branches: ["main"]
+
+# jobs:
+#   build-and-deploy:
+#     runs-on: ubuntu-22.04
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Fix Docker DNS
+#         run: |
+#           sudo mkdir -p /etc/docker
+#           echo '{"dns":["8.8.8.8","1.1.1.1"]}' | sudo tee /etc/docker/daemon.json
+#           sudo systemctl restart docker
+
+#       - name: Increase Docker timeouts
+#         run: |
+#           echo "DOCKER_CLIENT_TIMEOUT=300" >> $GITHUB_ENV
+#           echo "COMPOSE_HTTP_TIMEOUT=300" >> $GITHUB_ENV
+
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+
+
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKER_USERNAME }}
+#           password: ${{ secrets.DOCKER_PASSWORD }}
+
+#       - name: Build and push backend image
+#         uses: docker/build-push-action@v5
+#         with:
+#           context: ./backend
+#           push: true
+#           tags: ${{ secrets.DOCKER_USERNAME }}/ragreader-backend:latest
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       - name: Build and push frontend image
+#         uses: docker/build-push-action@v5
+#         with:
+#           context: ./frontend
+#           push: true
+#           tags: ${{ secrets.DOCKER_USERNAME }}/ragreader-frontend:latest
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       - name: Install cloudflared
+#         run: |
+#           curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+#           sudo dpkg -i cloudflared.deb
+
+#       - name: Install sshpass
+#         run: sudo apt-get install -y sshpass
+
+#       - name: Deploy to server
+#         run: |
+#           sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh \
+#             -o StrictHostKeyChecking=no \
+#             -o ServerAliveInterval=30 \
+#             -o ServerAliveCountMax=5 \
+#             -o ProxyCommand="/usr/bin/cloudflared access ssh --hostname %h --id ${{ secrets.CF_CLIENT_ID }} --secret ${{ secrets.CF_CLIENT_SECRET }}" \
+#             ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+
+#           set -e
+
+#           APP_DIR=~/rag_app
+#           mkdir -p $APP_DIR
+#           cd $APP_DIR
+
+#           # -----------------------------
+#           # Environment files
+#           # -----------------------------
+#           cat > .env <<ENV
+#           DEBUG=false
+#           DEVELOPMENT_MODE=false
+
+#           DB_NAME=${{ secrets.DB_NAME }}
+#           DB_USER=${{ secrets.DB_USER }}
+#           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+#           DB_PORT=5432
+
+#           BACKEND_PORT=${{ secrets.BACKEND_PORT }}
+
+#           DATABASE_URL=postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASSWORD }}@postgres:5432/${{ secrets.DB_NAME }}
+
+#           OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+#           OPEN_ROUTER_KEY=${{ secrets.OPEN_ROUTER_KEY }}
+
+#           LANGSMITH_TRACING=false
+#           LANGSMITH_API_KEY=${{ secrets.LANGSMITH_API_KEY }}
+#           LANGSMITH_ENDPOINT=${{ secrets.LANGSMITH_ENDPOINT }}
+#           LANGSMITH_PROJECT=${{ secrets.LANGSMITH_PROJECT }}
+#           ENV
+
+#           mkdir -p frontend
+#           cat > frontend/.env <<ENV
+#           VITE_API_URL=http://backend:${{ secrets.BACKEND_PORT }}
+#           VITE_API_VERSION=v1
+#           ENV
+
+#           # -----------------------------
+#           # Compose file
+#           # -----------------------------
+#           cat > docker-compose.prod.yml <<'COMPOSE'
+#           services:
+#             postgres:
+#               image: postgres:16-alpine
+#               container_name: rag_postgres
+#               env_file: .env
+#               volumes:
+#                 - postgres_data:/var/lib/postgresql/data
+#               restart: unless-stopped
+
+#             redis:
+#               image: redis:7-alpine
+#               container_name: rag_redis
+#               restart: unless-stopped
+
+#             vector_db:
+#               image: chromadb/chroma
+#               container_name: rag_vectordb
+#               volumes:
+#                 - vectorstore:/chroma/chroma
+#               restart: unless-stopped
+
+#             backend:
+#               image: ${{ secrets.DOCKER_USERNAME }}/ragreader-backend:latest
+#               container_name: rag_backend
+#               command: daphne
+#               env_file: .env
+#               depends_on:
+#                 - postgres
+#                 - redis
+#                 - vector_db
+#               ports:
+#                 - "${{ secrets.BACKEND_PORT }}:${{ secrets.BACKEND_PORT }}"
+#               restart: unless-stopped
+
+#             worker:
+#               image: ${{ secrets.DOCKER_USERNAME }}/ragreader-backend:latest
+#               container_name: rag_worker
+#               command: celery -A ragreader worker -l info
+#               env_file: .env
+#               depends_on:
+#                 - redis
+#                 - postgres
+#               restart: unless-stopped
+
+#             frontend:
+#               image: ${{ secrets.DOCKER_USERNAME }}/ragreader-frontend:latest
+#               container_name: rag_frontend
+#               ports:
+#                 - "5176:5176"
+#               depends_on:
+#                 - backend
+#               restart: unless-stopped
+
+#           volumes:
+#             postgres_data:
+#             vectorstore:
+#           COMPOSE
+
+#           docker pull ${{ secrets.DOCKER_USERNAME }}/ragreader-backend:latest
+#           docker pull ${{ secrets.DOCKER_USERNAME }}/ragreader-frontend:latest
+#           docker pull chromadb/chroma
+#           docker pull redis:7-alpine
+
+#           docker compose -f docker-compose.prod.yml up -d --remove-orphans --pull never
+
+#           docker image prune -f --filter "dangling=true"
+
+#           EOF

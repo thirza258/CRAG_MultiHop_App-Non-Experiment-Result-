@@ -1,0 +1,101 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag_backend
+    ports:
+      - "8051:8000"
+    depends_on:
+      - redis
+      - postgres
+      - chromadb
+    env_file:
+      - ./backend/.env
+    environment:
+      - MODEL_CACHE_DIR=/app/models
+    volumes:
+      - ./backend/models:/app/models
+      - media:/app/media
+      - vectorstores:/app/vector_stores
+    command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "ragreader.asgi:application"]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rag_worker
+    command: ["celery", "-A", "ragreader", "worker", "-l", "info"]
+    depends_on:
+      - redis
+      - postgres
+      - chromadb
+    env_file:
+      - ./backend/.env
+    environment:
+      - MODEL_CACHE_DIR=/app/models
+    volumes:
+      - ./backend/models:/app/models
+      - media:/app/media
+      - vectorstores:/app/vector_stores
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rag_frontend
+    ports:
+      - "5151:5176"
+    depends_on:
+      - backend
+    env_file:
+      - ./frontend/.env
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag_redis
+    ports:
+      - "6351:6379"
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: rag_chromadb
+    ports:
+      - "8002:8000"
+    volumes:
+      - chroma_data:/data             # named volume instead of bind mount
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/data
+      - CHROMA_SERVER_CORS_ALLOW_ORIGINS=["http://localhost:5176","http://localhost:3000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/api/v2/heartbeat || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: rag_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: crag_db
+      POSTGRES_USER: myuser
+      POSTGRES_PASSWORD: changeme
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  model_cache:    
+  media:           
+  vectorstores:     
+  chroma_data:     

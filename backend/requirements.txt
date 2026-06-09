@@ -1,0 +1,56 @@
+
+Django>=4.2
+langchain-classic==1.0.3
+langchain-community==0.4.1
+ragas==0.4.3
+
+# ── Web / API ──────────────────────────────────────────────
+djangorestframework
+django-cors-headers
+daphne
+channels
+drf-spectacular
+dj-database-url
+asgiref
+python-dotenv
+
+# ── Database ───────────────────────────────────────────────
+psycopg2-binary
+redis
+django-redis
+
+# ── Task queue ─────────────────────────────────────────────
+celery[redis]
+channels-redis
+
+# ── ML / NLP ───────────────────────────────────────────────
+# torch installed separately as CPU-only in Dockerfile
+sentence-transformers
+transformers
+chromadb
+accelerate
+
+# ── LangChain ──────────────────────────────────────────────
+langchain
+langchain-openai
+langchain-text-splitters
+
+openai
+
+# ── Data / Retrieval ───────────────────────────────────────
+numpy
+pandas
+scikit-learn
+rank-bm25
+nltk
+datasets
+huggingface-hub
+
+
+# ── Utilities ──────────────────────────────────────────────
+pydantic
+beautifulsoup4
+requests
+PyPDF2
+wikipedia
+whitenoise

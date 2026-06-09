@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* --- DEEP OCEAN THEME --- */
+    
+    /* Background: Deepest Slate (#020617) */
+    --background: 222 84% 4.9%;
+    /* Foreground: White Text (#f8fafc) */
+    --foreground: 210 40% 98%;
+
+    /* Card: Slightly lighter blue (#0f172a) */
+    --card: 222 47% 11.2%;
+    --card-foreground: 210 40% 98%;
+
+    /* Popover: Same as card */
+    --popover: 222 47% 11.2%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Primary: Cyan (#06b6d4) */
+    --primary: 189 94% 43%;
+    --primary-foreground: 222 47% 11.2%; /* Dark text on bright button */
+
+    /* Secondary: Ocean Blue (#2563eb) */
+    --secondary: 221 83% 53%;
+    --secondary-foreground: 210 40% 98%;
+
+    /* Muted: Slate 800 (#1e293b) - Used for secondary backgrounds */
+    --muted: 217 33% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    /* Accent: Used for hover effects (#334155) */
+    --accent: 217 33% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    /* Destructive: Red */
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Border: Slate 800 (#1e293b) */
+    --border: 217 33% 17.5%;
+    /* Input: Same as border */
+    --input: 217 33% 17.5%;
+    
+    /* Ring: Matches Primary Cyan */
+    --ring: 189 94% 43%;
+
+    --radius: 0.5rem;
+
+    /* Charts (Optional matches) */
+    --chart-1: 189 94% 43%; /* Cyan */
+    --chart-2: 221 83% 53%; /* Blue */
+    --chart-3: 217 33% 17%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+
+  .dark {
+    --background: 222 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 11.2%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 11.2%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 189 94% 43%;
+    --primary-foreground: 222 47% 11.2%;
+    --secondary: 221 83% 53%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217 33% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 17.5%;
+    --input: 217 33% 17.5%;
+    --ring: 189 94% 43%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

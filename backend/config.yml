@@ -1,0 +1,19 @@
+# Core LLM Settings  
+"llm_model": "gpt-4o",              # LLM for answer generation  
+"temperature": 0.0,                 # LLM temperature (0.0 = deterministic)  
+# Embedding Settings  
+"model": "text-embedding-3-small",  # OpenAI embedding model  
+# Retrieval Settings  
+"top_k": 5,                         # Number of documents to retrieve  
+# Chunking Strategy  
+"chunk_strategy": "paragraph",      # Options: "fixed", "paragraph", "semantic"  
+"chunk_size": 500,                  # Max characters per chunk  
+"overlap": 50,                      # Overlap for fixed chunking only  
+# Storage Settings  
+"vector_store_path": "./vector_stores",  # Path to store vector indices  
+# Iterative RAG Specific  
+"max_retries": 3,                   # Max iterations for iterative search  
+# Reranker Settings  
+"reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",  
+"reranker_top_k": 3,  
+"device": "cuda"                    # or "cpu" - auto-detected if not specified  
