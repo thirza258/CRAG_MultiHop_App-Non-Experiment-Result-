@@ -28,7 +28,27 @@ The easiest way to run the entire stack is with Docker. All services (backend, w
    ```
    The default values work out of the box for Docker.
 
+> **⚠️ Warning**
+>
+> If you have an unreliable internet connection, it is recommended to manually download the reranker model before starting the application.
+>
+> Install the required package:
+>
+> ```bash
+> pip install huggingface-hub
+> ```
+>
+> Then run:
+>
+> ```bash
+> python dl_reranker_model.py
+> ```
+>
+> This will download and cache the reranker model locally, helping to avoid startup failures caused by network interruptions.
+
+
 4. **Start all services**
+   
    ```bash
    docker compose up -d --build
    ```
