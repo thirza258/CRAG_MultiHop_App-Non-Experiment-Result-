@@ -25,9 +25,9 @@ def initialize_rag_task(self, job_id, username, method, model_config):
         return True
 
     except Exception as e:
+        logger.exception(f"[initialize_rag_task] Job {job_id} failed: {e}")
         if 'job' in locals():
             job.mark_failed(str(e))
-            return False
         return False
 
 @shared_task(bind=True)
@@ -67,8 +67,9 @@ def run_single_analysis(self, batch_id, username, query, variant_config):
         )
         return True
     except Exception as e:
+        logger.exception(f"[run_single_analysis] Batch {batch_id} query failed: {e}")
         return False
-    
+
 
 @shared_task(bind=True, max_retries=3)
 def build_index_task(self, document_id: int, username: str):

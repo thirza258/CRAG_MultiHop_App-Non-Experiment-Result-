@@ -1,16 +1,22 @@
 import logging
+import os
 from pathlib import Path
 import hashlib
 from router.models import Document, GuestUser
 
 logger = logging.getLogger(__name__)
 
-MODELS_DIR = Path.cwd() / "models"
+MODELS_DIR = Path(os.getenv("MODEL_CACHE_DIR", Path.cwd() / "models"))
 
 def _local_model_path(model_name: str) -> str:
     local = MODELS_DIR / model_name.replace("/", "--")
-    if local.exists() and any(local.iterdir()):
+    if (local / ".download_complete").exists():
         logger.info(f"Using local model: {local}")
+        return str(local)
+    # No completion marker: only trust the dir if it has real model files
+    # (an interrupted snapshot_download leaves a hidden .cache dir behind).
+    if local.exists() and any(p for p in local.iterdir() if not p.name.startswith(".")):
+        logger.info(f"Using local model (no marker, non-empty dir): {local}")
         return str(local)
     logger.info(f"Local not found, falling back to HF hub: {model_name}")
     return model_name

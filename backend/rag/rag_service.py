@@ -80,14 +80,23 @@ class RAGRegistry:
 
         print("--- RAG ENGINE READY ---")
 
-    def get_engine(self):
+    def get_engine(self, method=None, model=None):
         """
         Retrieve the initialized RAG pipeline.
-        Usage:
-            registry.get_engine()
+
+        `method`/`model` are accepted for backwards compatibility with older
+        call sites but ignored — a single shared pipeline serves all requests.
+        If startup initialization failed (e.g. ChromaDB or the model cache
+        was briefly unavailable), retry once per call instead of staying
+        broken until the container restarts.
         """
         if self.engine is None:
-            raise ValueError("RAG engine is not initialized.")
+            self.initialize_engine()
+        if self.engine is None:
+            raise ValueError(
+                "RAG engine is not initialized (see startup logs for the "
+                "original error). It will be retried on the next request."
+            )
         return self.engine
 
 

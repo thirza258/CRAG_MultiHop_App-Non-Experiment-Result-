@@ -25,11 +25,14 @@ CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = os.getenv("CHROMA_PORT", "8002")
 
 
-os.environ["LANGSMITH_TRACING"] = "true"
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
-os.environ["LANGSMITH_API_KEY"] = os.getenv("LANGSMITH_API_KEY")
-os.environ["LANGSMITH_ENDPOINT"] = os.getenv("LANGSMITH_ENDPOINT")
-os.environ["LANGSMITH_PROJECT"] = os.getenv("LANGSMITH_PROJECT")
+# Pass optional keys through only when set — os.environ[...] = None
+# raises TypeError and crashes startup.
+for _key in ("OPENAI_API_KEY", "LANGSMITH_API_KEY", "LANGSMITH_ENDPOINT", "LANGSMITH_PROJECT"):
+    _value = os.getenv(_key)
+    if _value:
+        os.environ[_key] = _value
+
+os.environ["LANGSMITH_TRACING"] = os.getenv("LANGSMITH_TRACING", "false")
 os.environ["USER_AGENT"] = "ragreader"
 
 # Quick-start development settings - unsuitable for production
@@ -38,8 +41,13 @@ os.environ["USER_AGENT"] = "ragreader"
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv("SECRET_KEY", "secret-key-for-development")
 
+def _env_bool(name: str, default: str = "False") -> bool:
+    """Case-insensitive boolean env parsing: true/1/yes/on all count."""
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv("DEBUG", "False") == "True"
+DEBUG = _env_bool("DEBUG")
 
 ALLOWED_HOSTS = os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost").split(",")
 
@@ -165,7 +173,7 @@ ASGI_APPLICATION = "ragreader.asgi.application"
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-DEVELOPMENT_MODE = os.getenv("DEVELOPMENT_MODE", "False") == "True"
+DEVELOPMENT_MODE = _env_bool("DEVELOPMENT_MODE")
 
 if DEVELOPMENT_MODE:
     DATABASES = {
@@ -175,10 +183,15 @@ if DEVELOPMENT_MODE:
         }
     }
 else:
+    _database_url = os.getenv("DATABASE_URL")
+    if not _database_url:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(
+            "DATABASE_URL is required when DEVELOPMENT_MODE is not 'true'. "
+            "Set it in backend/.env, or set DEVELOPMENT_MODE=true to use SQLite."
+        )
     DATABASES = {
-        "default": dj_database_url.parse(
-            os.environ["DATABASE_URL"]
-        ),
+        "default": dj_database_url.parse(_database_url),
     }
 
 

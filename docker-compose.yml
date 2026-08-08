@@ -3,6 +3,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Named tag so the worker can reuse this exact image instead of
+    # building (and storing) a second identical copy.
+    image: ragreader-backend:latest
     container_name: rag_backend
     ports:
       - "8051:8000"
@@ -23,11 +26,18 @@ services:
       - vectorstores:/app/vector_stores
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "ragreader.asgi:application"]
     restart: unless-stopped
+    healthcheck:
+      # Healthy once daphne accepts connections — i.e. after migrations,
+      # base dataset prep and model download have finished.
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 120
+      start_period: 60s
 
   worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    # Same image as the backend — built once by the backend service.
+    image: ragreader-backend:latest
     container_name: rag_worker
     command: ["celery", "-A", "ragreader", "worker", "-l", "info"]
     depends_on:
@@ -38,11 +48,16 @@ services:
       chromadb:
         condition: service_started
       backend:
-        condition: service_started
+        # Wait until the backend finished migrations + downloads, so the
+        # two containers never run init steps concurrently.
+        condition: service_healthy
     env_file:
       - ./backend/.env
     environment:
       - MODEL_CACHE_DIR=/app/models
+      # The backend container owns migrations, dataset insert and model
+      # download — the worker only waits for the shared model volume.
+      - SKIP_INIT=1
     volumes:
       - ./backend/models:/app/models
       - media:/app/media
@@ -110,7 +125,6 @@ services:
 
 volumes:
   postgres_data:
-  model_cache:    
-  media:           
-  vectorstores:     
-  chroma_data:     
+  media:
+  vectorstores:
+  chroma_data:

@@ -218,9 +218,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             logger.info(f"Subscribed to Redis channel: rag:status:{task_id}")
 
             def run():
+                # Created outside the try so the except block can always
+                # publish the error back to the websocket loop.
+                r_sync = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
                 try:
-                    r_sync = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-
                     answer = get_registry().get_engine().run(username, query, conversation_id=task_id)
                     logger.info(f"RAG pipeline completed for task_id: {task_id}, answer: {answer}")
 
@@ -255,6 +256,7 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
            
             timeout = 300  # 5 minutes max
             elapsed = 0
+            finished = False
 
             while elapsed < timeout:
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -274,7 +276,15 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                 logger.info(f"Sent to WebSocket: {payload.get('stage')}")
 
                 if payload.get("stage") in ("result", "error"):
+                    finished = True
                     break
+
+            if not finished:
+                # Don't leave the client hanging when the pipeline overruns.
+                await self.send(json.dumps({
+                    "stage": "error",
+                    "message": f"Request timed out after {timeout}s. Please try again.",
+                }))
 
             await pubsub.unsubscribe(channel)
             await r.aclose()

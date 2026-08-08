@@ -2,24 +2,18 @@ import pickle
 import os
 import re
 from typing import List, Dict, Any
-import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from rank_bm25 import BM25Okapi
 from rag.base_rag import BaseRAG
 from chroma.chroma_settings import get_chroma_client
+from common.nltk_setup import ensure_nltk_data
 import logging
 import numpy as np
 
-try:
-    nltk.data.find('corpora/stopwords')
-    nltk.data.find('tokenizers/punkt')
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    raise RuntimeError(
-        "Required NLTK data is missing. Rebuild the Docker image."
-    )
-    
+ensure_nltk_data()
+
+
 logger = logging.getLogger(__name__)
 
 class SparseRAG:

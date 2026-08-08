@@ -2,8 +2,33 @@ from langchain_openai import ChatOpenAI
 from common.prompt_builder import vote_prompt, rag_prompt, prompt_generator
 from abc import ABC, abstractmethod
 from typing import Optional
+import logging
 import os
+import time
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
+
+_MAX_ATTEMPTS = 3
+
+
+def _chat_with_retry(client: OpenAI, provider: str, model: str, prompt: str, temperature: float) -> str:
+    """Call the chat API, retrying transient failures with backoff."""
+    last_error = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as e:
+            last_error = e
+            logger.warning(f"{provider} call failed (attempt {attempt}/{_MAX_ATTEMPTS}, model={model}): {e}")
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(2 ** (attempt - 1))
+    return f"{provider} Error ({model}): {last_error}"
 
 class BaseLLM(ABC):
     def __init__(self, model: str, temperature: float = 0.0, api_key: Optional[str] = None):
@@ -45,15 +70,7 @@ class OpenAILLM(BaseLLM):
         self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
 
     def _call_api(self, prompt: str) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature
-            )
-            return (response.choices[0].message.content or "").strip()
-        except Exception as e:
-            return f"OpenAI Error: {e}"
+        return _chat_with_retry(self.client, "OpenAI", self.model, prompt, self.temperature)
 
 
 class OpenRouterLLM(BaseLLM):
@@ -75,15 +92,7 @@ class OpenRouterLLM(BaseLLM):
         )
 
     def _call_api(self, prompt: str) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.temperature
-            )
-            return (response.choices[0].message.content or "").strip()
-        except Exception as e:
-            return f"OpenRouter Error ({self.model}): {e}"
+        return _chat_with_retry(self.client, "OpenRouter", self.model, prompt, self.temperature)
 
 
 class ClaudeLLM(OpenRouterLLM):

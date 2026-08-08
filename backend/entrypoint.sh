@@ -3,7 +3,11 @@ set -e
 
 cd /app
 
-# ── Wait for PostgreSQL (using Python + psycopg2, already installed) ──
+MODEL_DIR="${MODEL_CACHE_DIR:-/app/models}"
+JINA_MARKER="$MODEL_DIR/jinaai--jina-reranker-v3/.download_complete"
+E5_MARKER="$MODEL_DIR/intfloat--multilingual-e5-small/.download_complete"
+
+# ── Wait for PostgreSQL ──────────────────────────────────────────────
 if [ -n "$DATABASE_URL" ]; then
     echo "Waiting for PostgreSQL..."
     python -c "
@@ -36,24 +40,55 @@ if db_url:
 "
 fi
 
-echo "Collecting static files..."
-python manage.py collectstatic --noinput
+# ── Wait for ChromaDB (plain TCP check — works with any chroma image) ─
+echo "Waiting for ChromaDB..."
+python -c "
+import os, socket, time
+host = os.environ.get('CHROMA_HOST', 'chromadb')
+port = int(os.environ.get('CHROMA_PORT', '8000'))
+for i in range(30, 0, -1):
+    try:
+        socket.create_connection((host, port), timeout=2).close()
+        print('ChromaDB is ready.')
+        break
+    except OSError:
+        print(f'Waiting for ChromaDB at {host}:{port}... ({i} retries left)')
+        time.sleep(2)
+else:
+    print('WARNING: ChromaDB not reachable — continuing, dependent steps will retry')
+"
 
-echo "Applying migrations..."
-python manage.py migrate --noinput
-
-echo "Inserting Base Data..."
-python insert_base_dataset.py || echo "WARNING: insert_base_dataset.py failed — continuing anyway"
-
-MODEL_DIR="${MODEL_CACHE_DIR:-/app/models}"
-
-mkdir -p "$MODEL_DIR"
-
-if [ -z "$(ls -A "$MODEL_DIR" 2>/dev/null)" ]; then
-    echo "Downloading and preparing models..."
-    python dl_reranker_model.py || echo "WARNING: Model download failed — continuing anyway"
+if [ "${SKIP_INIT:-0}" = "1" ]; then
+    # ── Worker mode: the backend container owns migrations, dataset ──
+    # insert and model download. Just wait until the models it downloads
+    # into the shared volume are ready, then start.
+    timeout="${MODEL_WAIT_TIMEOUT:-900}"
+    echo "SKIP_INIT=1 — waiting up to ${timeout}s for models prepared by the backend..."
+    waited=0
+    while [ "$waited" -lt "$timeout" ]; do
+        if [ -f "$JINA_MARKER" ] && [ -f "$E5_MARKER" ]; then
+            echo "Models are ready."
+            break
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    if [ ! -f "$JINA_MARKER" ] || [ ! -f "$E5_MARKER" ]; then
+        echo "WARNING: models not ready after ${timeout}s — starting anyway (will fall back to HuggingFace Hub)"
+    fi
 else
-    echo "Models already present, skipping download..."
+    echo "Collecting static files..."
+    python manage.py collectstatic --noinput
+
+    echo "Applying migrations..."
+    python manage.py migrate --noinput
+
+    echo "Preparing base dataset..."
+    python insert_base_dataset.py || echo "WARNING: insert_base_dataset.py failed — continuing anyway (re-run: docker compose exec backend python insert_base_dataset.py)"
+
+    mkdir -p "$MODEL_DIR"
+    echo "Checking / downloading models..."
+    python dl_reranker_model.py || echo "WARNING: model download incomplete — continuing anyway (re-run: docker compose exec backend python dl_reranker_model.py)"
 fi
 
 exec "$@"

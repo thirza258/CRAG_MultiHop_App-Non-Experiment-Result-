@@ -4,12 +4,15 @@ from nltk.tokenize import sent_tokenize
 import logging
 import torch
 from common.memory import _local_model_path
+from common.nltk_setup import ensure_nltk_data
 from transformers import AutoTokenizer, AutoModel
 import torch.nn.functional as F
 from torch import Tensor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+ensure_nltk_data()
 
 class CRAGEvaluator:
     def __init__(self, config):

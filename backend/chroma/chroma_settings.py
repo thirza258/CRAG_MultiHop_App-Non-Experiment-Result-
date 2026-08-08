@@ -17,7 +17,9 @@ CHROMA_DIR = "./chroma_db"
 
 def get_chroma_client(collection_name: str):
     client = chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT)
-    return client.get_collection(name=collection_name, embedding_function=None)
+    # get_or_create: the app must not crash just because a collection has
+    # not been populated yet (e.g. base dataset indexing disabled/failed).
+    return client.get_or_create_collection(name=collection_name, embedding_function=None)
 
 def get_client():
     return chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT)

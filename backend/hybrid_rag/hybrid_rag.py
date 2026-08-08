@@ -268,14 +268,16 @@ class HybridRAG:
 
         return reranked_docs, reranked_metas, rerank_status
 
-    def _rerank(self, query: str, candidates: List[str]) -> List[str]:
+    def _rerank(self, query: str, candidates: List[str]) -> tuple[List[int], str]:
         if not candidates:
-            return []
+            return [], "ok"
         try:
             return self._rerank_jina(query, candidates), "ok"
         except Exception as exc:
             logger.error(f"Reranking error (jina): {exc}", exc_info=True)
-        return candidates , "ERROR: reranking failed, returning original order"
+        # Callers index into the candidate list, so the fallback must be
+        # indices (original order), not the documents themselves.
+        return list(range(len(candidates))), "ERROR: reranking failed, returning original order"
 
     def _rerank_jina(self, query: str, candidates: List[str]) -> List[int]:
         results = self._model.rerank(
