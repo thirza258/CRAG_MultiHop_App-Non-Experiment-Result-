@@ -198,6 +198,24 @@ docker compose exec backend python insert_base_dataset.py
 3. Wait for indexing to finish (the worker chunks the document, embeds it, and stores it in ChromaDB).
 4. **Chat**: ask questions about your document. The pipeline streams status updates (retrieval → grading → reranking → generation → evaluation) over a websocket, then shows the answer with its supporting chunks and faithfulness / answer-relevancy scores.
 
+### Configuring the pipeline per query
+
+The **Pipeline** panel at the top of the chat sidebar controls how the next query is answered. The choice is saved in the browser and sent with every question as a `CONFIG` object.
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Corpus** | Auto / My docs / Base corpus | Which ChromaDB collection to search. `Auto` keeps the historic behaviour (your documents when you have any, otherwise the shared corpus). `My docs` refuses to silently fall back — if you have no documents it says so. |
+| **Retrievers** | Both / Dense / BM25 | Run both base retrievers, or only embedding similarity, or only keyword search. |
+| **Multi-hop** | on/off + max hops 1–3 | Whether to decompose the question into follow-up lookups, and the hop ceiling. |
+| **Corrective (CRAG)** | on/off | Whether retrieved context is self-graded and corrected. |
+| **Reranker** | on/off | Whether merged candidates are reordered by the local cross-encoder. |
+
+Switching a stage off is a genuine composition change, not a flag the pipeline ignores: with corrective off, multi-hop wraps the base retriever directly. Server-side, `backend/common/pipeline_config.py` validates and clamps whatever arrives, so **an absent or malformed `CONFIG` runs exactly the default full pipeline** — older clients are unaffected.
+
+### When a stage fails
+
+Each stage degrades on its own rather than failing the query. If dense retrieval dies the answer still comes from BM25; if the reranker is unavailable the merged chunks are used in retrieval order; if answer generation fails the retrieved **sources are still returned**. Every response carries a `degraded` list naming the stages that fell back (empty on a healthy run), and when nothing at all could be retrieved the app says so instead of letting the model guess.
+
 If you haven't uploaded any documents, queries fall back to the shared base collection (see [Indexing the base dataset](#indexing-the-base-dataset-optional)).
 
 ### Frontend routes
@@ -268,7 +286,22 @@ The script is idempotent: it skips indexing when the collection is already popul
 
 ## Testing
 
-Tests live **next to the code they cover**: `common/tests.py`, `ai_handler/tests.py`, `hybrid_rag/tests.py`, `rag/tests.py`, and `test_scripts.py` (for the root-level startup scripts). They cover the resumable model downloader, corpus download/validation, NLTK bootstrap, local model path resolution, LLM retry behavior, reranker fallback, and engine registry recovery — all with mocked network/models, so no API keys or downloads are needed.
+Tests live **next to the code they cover**, and every one of them runs with no network, no API key and no PostgreSQL/Redis/ChromaDB server — all external calls are mocked.
+
+| File | Covers |
+|------|--------|
+| `test_import_smoke.py` | Imports **every** backend module, resolves the URL conf, checks each websocket route points at a real consumer, and runs `manage.py check`. Deliberately has no skip guards: if the backend is broken, this fails loudly. |
+| `pipeline/tests.py` | `AppRAGPipeline` — chunk normalisation, collection/corpus resolution, chain selection per config, and the full **degradation matrix** (each stage failing in turn). |
+| `multi_hop/tests.py` | Hop loop, bridge decisions, dedup keys, early stopping, final re-rank fallbacks. |
+| `corrective/tests.py` | correct / ambiguous / incorrect decision branches, external-search isolation, local-vs-external scoring. |
+| `dense_rag/tests.py` | Embedding batching and partial failures, `where_filter` fallback, `n_results` clamping. |
+| `sparse_rag/tests.py` | Tokenisation and stop words, BM25 ranking, lazy index loading. |
+| `hybrid_rag/tests.py`, `hybrid_rag/test_merge.py` | Reranker fallback; merge/dedup/truncate and the rerank-disabled path. |
+| `router/tests.py` | Every REST endpoint through the Django test client, including file-hash dedup on re-upload. |
+| `router/test_tasks.py` | `build_index_task` status transitions, duplicate guards, retry on failure. |
+| `router/test_consumers.py` | The query websocket: the sidebar's `CONFIG` arriving at the pipeline intact. |
+| `common/tests.py`, `common/test_pipeline_config.py`, `common/test_chunker.py` | NLTK bootstrap, local model paths, config normalisation/clamping, chunking strategies. |
+| `ai_handler/tests.py`, `rag/tests.py`, `test_scripts.py` | LLM retry behaviour, engine-registry recovery, the resumable model downloader and corpus validation. |
 
 **Run in Docker (no other services required):**
 
@@ -293,6 +326,19 @@ DEVELOPMENT_MODE=true python manage.py test
 ```
 
 `./deploy.sh` runs this suite automatically before starting the stack and aborts the deployment if anything fails.
+
+> **Note:** every backend package needs an `__init__.py` for its tests to be collected. Python 3.11 dropped namespace-package support from `unittest` discovery, so a test file in a directory without one is silently never run.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+
+| Job | Steps |
+|-----|-------|
+| **Backend tests** | Python 3.11, CPU-only torch + `requirements.txt` (same two-step install as the Dockerfile), NLTK data, `manage.py check`, `makemigrations --check` (fails if a model change has no migration), then the full test suite. |
+| **Frontend** | Node 20, `npm ci`, `npm run build` (which is `tsc -b && vite build`, so it typechecks too). Lint runs but is non-blocking while pre-existing lint errors are cleaned up. |
+
+The backend job deliberately points `CHROMA_HOST`/`REDIS_HOST` at non-existent hosts, so a test that forgets to mock a service fails fast instead of hanging.
 
 ---
 
@@ -416,7 +462,7 @@ The Docker Compose setup runs as-is on any VPS with Docker installed — `./depl
 │   ├── ragreader/              # Django project (settings, ASGI, Celery)
 │   ├── router/                 # Main app: API views, websocket consumers, Celery tasks, models
 │   ├── pipeline/               # Pipeline orchestration (AppRAGPipeline)
-│   ├── rag/                    # Engine registry + base retriever interfaces (tests.py inside)
+│   ├── rag/                    # Engine registry (tests.py inside)
 │   ├── dense_rag/              # Dense retrieval (embeddings via OpenRouter)
 │   ├── sparse_rag/             # BM25 retrieval (NLTK tokenization)
 │   ├── hybrid_rag/             # Merge + dedup + local reranker (tests.py inside)

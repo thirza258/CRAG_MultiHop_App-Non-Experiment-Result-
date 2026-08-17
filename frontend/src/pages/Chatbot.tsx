@@ -9,6 +9,7 @@ import TextUploadSection from "../components/file/TextInput";
 import { useNavigate } from "react-router-dom";
 import {WS_BASE_URL} from "../services/websocket";
 import { useSeo } from "../lib/seo";
+import { usePipelineConfig } from "../context/PipelineConfigContext";
 
 function Chatbot() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -25,6 +26,12 @@ function Chatbot() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const navigate = useNavigate();
+  const { config: pipelineConfig } = usePipelineConfig();
+
+  // sendMessage runs inside websocket callbacks, so read the live config from a
+  // ref rather than closing over the value at render time.
+  const configRef = useRef(pipelineConfig);
+  configRef.current = pipelineConfig;
 
   useSeo({
     title: "Chat with your documents | CRAG MultiHop RAG",
@@ -68,7 +75,13 @@ function Chatbot() {
   wsRef.current = ws;
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ USER: username, QUERY: input }));
+    ws.send(
+      JSON.stringify({
+        USER: username,
+        QUERY: input,
+        CONFIG: configRef.current,
+      })
+    );
   };
 
   ws.onmessage = (e) => {

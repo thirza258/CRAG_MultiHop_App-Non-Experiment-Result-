@@ -29,6 +29,18 @@ def compute_file_hash(file) -> str:
     file.seek(0)  # reset so downstream readers aren't broken
     return hasher.hexdigest()
 
+
+def compute_text_hash(text: str) -> str:
+    """
+    SHA-256 of a string source (pasted text, or a URL).
+
+    Text and URL ingestion need the same per-user dedup key that uploads get from
+    compute_file_hash, but they have no file object to read chunks from. Hashing
+    the URL means resubmitting the same link is recognised as the same document;
+    hashing pasted text means resubmitting the same passage is too.
+    """
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
 def check_existing_document(self, user: GuestUser, file_hash: str) -> Document | None:
     return Document.objects.filter(
         user=user,

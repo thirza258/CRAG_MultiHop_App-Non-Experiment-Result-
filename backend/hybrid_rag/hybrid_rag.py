@@ -1,6 +1,5 @@
 from typing import List, Dict, Any
 from collections import defaultdict
-from rag.base_rag import BaseRAG
 from sparse_rag.sparse_rag import SparseRAG
 from dense_rag.dense_rag import DenseRAG
 import torch
@@ -9,6 +8,7 @@ from sentence_transformers import CrossEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel, AutoModelForCausalLM
 import json
 from common.memory import _local_model_path
+from emitter.status import NULL_EMITTER
 from collections import defaultdict
 
 _RERANKER_CACHE: Dict[str, Any] = {}
@@ -39,10 +39,25 @@ class HybridRAG:
         self.top_k               = config.get("top_k", 5)
         self.documents: List[str] = []
 
+        # Callers inject the real emitter through set_emitter(); until then a
+        # no-op emitter keeps self.emitter.emit(...) safe on every code path.
+        self.emitter = NULL_EMITTER
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Reranker device: {self.device} | CUDA available: {torch.cuda.is_available()}")
         logger.info(f"Loading reranker model: {self.reranker_model_name!r}")
-        self._load_reranker()
+        try:
+            self._load_reranker()
+        except Exception as exc:
+            # A missing or corrupt local reranker snapshot must not make the whole
+            # RAG pipeline unconstructible — retrieval still works, it just keeps
+            # the merged candidate order instead of a reranked one.
+            self._model = None
+            logger.warning(
+                f"[HybridRAG] Reranker {self.reranker_model_name!r} could not be loaded ({exc}) — "
+                f"continuing without reranking",
+                exc_info=True,
+            )
 
     def _load_reranker(self) -> None:
         cache_key = self.reranker_model_name
@@ -67,11 +82,6 @@ class HybridRAG:
         )
         self._model.eval()
         _RERANKER_CACHE[cache_key] = {"_model": self._model}
-
-    def index_documents(self, documents: List[str]) -> None:
-        self.documents = list(documents)
-        self.dense_rag.index_documents(self.documents)
-        self.sparse_rag.index_documents(self.documents)
 
     @staticmethod
     def _extract_text_only(chunk: str) -> str:
@@ -155,6 +165,8 @@ class HybridRAG:
         sparse_chunks: List[str],
         dense_metas:   List[Dict] = None,
         sparse_metas:  List[Dict] = None,
+        *,
+        use_reranker:  bool = True,
     ) -> tuple[List[str], List[Dict], str]:
         if isinstance(dense_chunks,  str): dense_chunks  = json.loads(dense_chunks)
         if isinstance(sparse_chunks, str): sparse_chunks = json.loads(sparse_chunks)
@@ -208,6 +220,19 @@ class HybridRAG:
             merged_chunks, merged_metas = fallback_chunks, fallback_metas
 
         # ── Rerank ────────────────────────────────────────────────────────────────
+        # Opting out is a caller decision (user-facing toggle), so it keeps the
+        # merge order rather than reporting a reranker problem.
+        if not use_reranker:
+            logger.info(
+                f"[HybridRAG] Reranking disabled by caller — returning first "
+                f"{self.final_top_k} of {len(merged_chunks)} merged chunks"
+            )
+            return (
+                merged_chunks[:self.final_top_k],
+                merged_metas[:self.final_top_k],
+                "ok (rerank disabled)",
+            )
+
         reranked_indices, rerank_status = self._rerank(query, merged_chunks)
         reranked_indices = reranked_indices[:self.final_top_k]
 
@@ -271,6 +296,11 @@ class HybridRAG:
     def _rerank(self, query: str, candidates: List[str]) -> tuple[List[int], str]:
         if not candidates:
             return [], "ok"
+        # Construction is allowed to succeed without a reranker (see __init__), so a
+        # missing model is an expected state here — never worth retrying the load.
+        if getattr(self, "_model", None) is None:
+            logger.warning("[HybridRAG] Reranker model unavailable — keeping original candidate order")
+            return list(range(len(candidates))), "ok (reranking skipped: reranker unavailable)"
         try:
             return self._rerank_jina(query, candidates), "ok"
         except Exception as exc:

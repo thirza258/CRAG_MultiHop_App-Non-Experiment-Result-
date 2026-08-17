@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import service from "../services/service";
 import { FileMetadata, ConversationItem } from "../interface";
+import PipelineConfigPanel from "./PipelineConfigPanel";
 
 const Sidebar: React.FC = () => {
   const navigate = useNavigate();
@@ -90,7 +91,12 @@ return (
 
     {/* Scrollable sections container - flex column with equal children */}
     <div className="flex-1 flex flex-col min-h-0 p-4">
-      
+
+      {/* Per-query pipeline configuration */}
+      <PipelineConfigPanel />
+
+      <hr className="border-[hsl(var(--border))] my-4 flex-shrink-0" />
+
       {/* Current Active Content Section */}
       <section className="flex flex-col min-h-0 flex-1">
         <div className="flex justify-between items-center mb-3 flex-shrink-0">

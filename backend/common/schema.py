@@ -88,7 +88,10 @@ class RAGResponse(BaseModel):
         , content_type="application/json"
         )
 
-    
+    # Without @staticmethod this bound as an instance method, so every caller
+    # (all of which use get_responses().response_404(error=...)) passed `self`
+    # into `error` and raised TypeError — turning every intended 404 into a 500.
+    @staticmethod
     def response_404(error: str):
         return JsonResponse({
             "status": 404,

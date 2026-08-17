@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from evaluation.models import Chunk, GroundTruthChunk, GroundTruthResponse
-from router.models import Conversation, GuestUser, Document, AnalysisBatch, AnalysisResult
+from router.models import Conversation, GuestUser, Document
 from common.chunker import DocumentChunker
 from common.schema import get_responses
 

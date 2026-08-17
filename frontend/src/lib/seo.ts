@@ -4,9 +4,9 @@ import { useEffect } from "react";
  * Per-route metadata for a client-rendered SPA.
  *
  * Crawlers that execute JavaScript (Googlebot, Bingbot) pick these up after
- * hydration. Crawlers that do not (Facebook, X, LinkedIn, Slack) only ever see
- * the static tags in `index.html`, which describe the landing page — so keep
- * `index.html` in sync with the values used for the "/" route below.
+ * hydration. Crawlers that do not (Facebook, X, LinkedIn, Slack) see the static
+ * tags in `index.html`, which describe the landing page — keep `index.html`
+ * in sync with the values used for the "/" route below.
  */
 
 export const SITE_URL = "https://crag.nevatal.tech";
@@ -23,6 +23,8 @@ type SeoOptions = {
   path: string;
   /** Keep private/auth-gated routes out of the index. */
   noindex?: boolean;
+  /** Optional custom JSON-LD schema objects to inject dynamically */
+  jsonLd?: Record<string, unknown> | Array<Record<string, unknown>>;
 };
 
 const setMeta = (attr: "name" | "property", key: string, content: string) => {
@@ -46,7 +48,7 @@ const setCanonical = (href: string) => {
   el.setAttribute("href", href);
 };
 
-export function useSeo({ title, description, path, noindex = false }: SeoOptions) {
+export function useSeo({ title, description, path, noindex = false, jsonLd }: SeoOptions) {
   useEffect(() => {
     const url = `${SITE_URL}${path}`;
 
@@ -71,5 +73,21 @@ export function useSeo({ title, description, path, noindex = false }: SeoOptions
     setMeta("name", "twitter:image", OG_IMAGE);
 
     setCanonical(url);
-  }, [title, description, path, noindex]);
+
+    // Optional dynamic JSON-LD injection
+    let scriptEl: HTMLScriptElement | null = null;
+    if (jsonLd) {
+      scriptEl = document.createElement("script");
+      scriptEl.type = "application/ld+json";
+      scriptEl.id = "dynamic-jsonld";
+      scriptEl.text = JSON.stringify(jsonLd);
+      document.head.appendChild(scriptEl);
+    }
+
+    return () => {
+      if (scriptEl && document.head.contains(scriptEl)) {
+        document.head.removeChild(scriptEl);
+      }
+    };
+  }, [title, description, path, noindex, jsonLd]);
 }

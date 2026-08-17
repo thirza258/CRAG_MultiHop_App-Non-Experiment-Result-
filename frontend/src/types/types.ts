@@ -17,6 +17,22 @@ export type Message = {
 
 export type EmbeddingStatus = "embedded" | "pending" | "failed";
 
+/**
+ * Per-query pipeline configuration, sent as CONFIG on the query websocket.
+ * snake_case keys mirror backend/common/pipeline_config.py exactly.
+ */
+export type RetrieverChoice = "both" | "dense" | "sparse";
+export type CorpusChoice = "auto" | "user" | "base";
+
+export type PipelineConfig = {
+  use_multi_hop: boolean;
+  max_hops: number;
+  use_corrective: boolean;
+  use_reranker: boolean;
+  retrievers: RetrieverChoice;
+  corpus: CorpusChoice;
+};
+
 export type SubmitPayload =
   | { type: "file"; file: File }
   | { type: "url"; url: string }

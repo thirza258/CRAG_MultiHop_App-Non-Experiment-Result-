@@ -1,5 +1,6 @@
 import logging
 from typing import Any, List, Dict
+from emitter.status import NULL_EMITTER
 from .corrective_evaluator import CRAGEvaluator
 from .external_search import ExternalSearcher
 from .query_expander import QueryExpander
@@ -7,6 +8,11 @@ from .query_expander import QueryExpander
 logger = logging.getLogger(__name__)
 
 class CorrectiveRAG:
+    # The real emitter arrives later via set_emitter(); the class-level default
+    # keeps direct construction (and instances built without __init__) from
+    # blowing up on the first self.emitter.emit() call.
+    emitter = NULL_EMITTER
+
     def __init__(self, retriever, config: Dict[str, Any]):
         self.retriever      = retriever
         self.evaluator      = CRAGEvaluator(config)
@@ -14,6 +20,7 @@ class CorrectiveRAG:
         self.query_expander = QueryExpander(config)
         # self.seen_urls: set = set()
         self.top_k          = getattr(retriever, 'top_k', 5)
+        self.emitter        = NULL_EMITTER
 
     # def reset_seen_urls(self) -> None:
     #     self.seen_urls.clear()
@@ -29,6 +36,33 @@ class CorrectiveRAG:
                 if url := meta.get("url"):
                     seen_urls.add(url)
 
+    def _safe_keyword(self, query: str) -> str:
+        """
+        The keyword is only a retrieval hint, and expanding it costs an LLM call.
+        A dead expander must not kill the query — the raw query works as keyword.
+        """
+        try:
+            return self.query_expander.to_keyword(query)
+        except Exception as e:
+            logger.warning(f"[_safe_keyword] keyword expansion failed, using raw query: {e}")
+            return query
+
+    def _safe_reformulate(self, query: str) -> str:
+        """Same reasoning as _safe_keyword — fall back to the original query."""
+        try:
+            return self.query_expander.reformulate(query)
+        except Exception as e:
+            logger.warning(f"[_safe_reformulate] reformulation failed, using raw query: {e}")
+            return query
+
+    def _safe_expand_multiple(self, query: str, n: int = 3) -> List[str]:
+        """Alternative phrasings are a bonus retry; without them we just skip the retries."""
+        try:
+            return self.query_expander.expand_multiple(query, n=n)
+        except Exception as e:
+            logger.warning(f"[_safe_expand_multiple] expansion failed, skipping alternatives: {e}")
+            return []
+
     def retrieve_with_decision(
         self, query: str, keyword: str = None, where_filter: Dict = None, seen_urls: set = None
     ) -> tuple[List[str], List[Dict], str]:
@@ -37,7 +71,7 @@ class CorrectiveRAG:
         
         seen_urls = seen_urls if seen_urls is not None else set()
 
-        keyword      = keyword or self.query_expander.to_keyword(query)
+        keyword      = keyword or self._safe_keyword(query)
         where_filter = where_filter or self._build_filter(seen_urls)
 
         docs, metas = self.retriever.retrieve(
@@ -49,8 +83,17 @@ class CorrectiveRAG:
             return self._fetch_fully_external(query, local_docs=[], local_score=float("-inf"))
 
         self._track_urls(metas, seen_urls)
-        decision, filtered, filtered_metas, local_score = self.evaluator.evaluate(query, docs, metas)
-        
+
+        try:
+            decision, filtered, filtered_metas, local_score = self.evaluator.evaluate(query, docs, metas)
+        except Exception as e:
+            # This layer only exists to *improve* retrieval. With the grader down
+            # (model missing, no network) plain retrieval is still a valid answer,
+            # so hand the inner retriever's docs straight through.
+            logger.warning(f"[retrieve_with_decision] evaluator failed, degrading to plain retrieval: {e}")
+            self.emitter.emit("corrective_pipeline", f"Evaluator unavailable — returning {len(docs)} unfiltered chunks")
+            return docs, metas or [], "correct_degraded"
+
         self.emitter.emit("corrective_pipeline", f"Evaluation decision: {decision}, local_score: {local_score:.3f}")
         
         logger.info(f"[retrieve_with_decision] first attempt: decision={decision}, best_score={local_score:.3f}")
@@ -113,13 +156,14 @@ class CorrectiveRAG:
         self, query: str, previous_metas: List[Dict], seen_urls: set = None
     ) -> tuple[List[str], List[Dict], str]:
 
-        seen_urls = seen_urls if seen_urls is not None else seen_urls
+        # Must be a real set: _track_urls() calls .add() on it unconditionally.
+        seen_urls = seen_urls if seen_urls is not None else set()
         self._track_urls(previous_metas, seen_urls)
         where_filter = self._build_filter(seen_urls)
 
-        reformulated = self.query_expander.reformulate(query)
-        keyword      = self.query_expander.to_keyword(reformulated)
-        n_ways       = self.query_expander.expand_multiple(query, n=3)
+        reformulated = self._safe_reformulate(query)
+        keyword      = self._safe_keyword(reformulated)
+        n_ways       = self._safe_expand_multiple(query, n=3)
 
         logger.info(f"[handle_ambiguous] reformulated query: '{reformulated}'")
         logger.info(f"[handle_ambiguous] excluded URLs: {seen_urls}")
@@ -148,7 +192,7 @@ class CorrectiveRAG:
                 logger.info(f"[handle_ambiguous] trying alternative query: '{alt_query}'")
                 alt_docs, alt_metas = self.retriever.retrieve(
                     query        = alt_query,
-                    keyword      = self.query_expander.to_keyword(alt_query),
+                    keyword      = self._safe_keyword(alt_query),
                     where_filter = where_filter
                 )
                 if not alt_docs:

@@ -1,11 +1,17 @@
 from collections import defaultdict
 from typing import Any, List, Dict
+import inspect
 import json
 from ai_handler.llm import OpenRouterLLM
+from emitter.status import NULL_EMITTER
 import logging
 import hashlib
 
 logger = logging.getLogger(__name__)
+
+# ai_handler.llm reports exhausted retries by RETURNING "<Provider> Error (...)"
+# instead of raising, so those bodies have to be recognised as failures here.
+_LLM_ERROR_PREFIXES = ("OpenRouter Error", "OpenAI Error")
 
 BRIDGE_PROMPT = """
 You are helping with multi-hop question answering.
@@ -32,7 +38,42 @@ class MultiHopRetriever:
             "top_k",
             getattr(retriever, "top_k", 5)
         )
-        self.evaluator    = retriever.evaluator
+        # Only CorrectiveRAG owns an evaluator. Corrective mode is going to become
+        # switchable, and a bare Dense/SparseRAG wrapped directly has none — so the
+        # re-rank stays optional instead of exploding at construction time.
+        self.evaluator = getattr(retriever, "evaluator", None)
+        # The pipeline injects the real emitter via set_emitter() later; until then
+        # status calls must be no-ops rather than AttributeError.
+        self.emitter = NULL_EMITTER
+        # Probed once: CorrectiveRAG.retrieve takes seen_urls, Dense/SparseRAG do not.
+        self._inner_accepts_seen_urls = self._accepts_seen_urls(retriever)
+
+    @staticmethod
+    def _accepts_seen_urls(retriever) -> bool:
+        """
+        True when the wrapped retriever's retrieve() can take a seen_urls keyword.
+        """
+        retrieve = getattr(retriever, "retrieve", None)
+
+        if retrieve is None:
+            return False
+
+        try:
+            params = inspect.signature(retrieve).parameters
+        except (TypeError, ValueError):
+            # Introspection-hostile callables (C-implemented, exotic wrappers): assume
+            # the narrower signature so the hop still runs instead of TypeError-ing.
+            logger.warning("[MultiHop] Could not inspect retrieve(); assuming no seen_urls support.")
+            return False
+
+        if "seen_urls" in params:
+            return True
+
+        # A **kwargs retriever swallows anything we hand it.
+        return any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            for param in params.values()
+        )
 
     def _extract_bridge_or_done(
         self,
@@ -55,11 +96,27 @@ class MultiHopRetriever:
         logger.info(prompt)
         logger.info("=" * 80)
 
-        response = self.llm.generate(prompt)
+        try:
+            response = self.llm.generate(prompt)
+        except Exception as exc:
+            # No bridge decision means no further hop — the chunks already gathered
+            # are still usable, so stop cleanly instead of failing the whole query.
+            logger.error(f"[Bridge] LLM call failed, stopping retrieval: {exc}")
+            return None
 
         logger.info("[Bridge Response]")
         logger.info(response)
         logger.info("=" * 80 + "\n")
+
+        if not isinstance(response, str) or not response.strip():
+            logger.info("[Decision] Empty LLM response. Stopping retrieval.")
+            return None
+
+        if response.startswith(_LLM_ERROR_PREFIXES):
+            # An error body is not a decision, and must never be treated as a
+            # bridge entity to search for on the next hop.
+            logger.error(f"[Decision] LLM returned an error body. Stopping retrieval: {response}")
+            return None
 
         if response.startswith("SUFFICIENT"):
             logger.info("[Decision] Context is sufficient. Stopping retrieval.")
@@ -159,15 +216,29 @@ class MultiHopRetriever:
             logger.info(f"\n[Hop {hop + 1}/{self.max_hops}]")
             self.emitter.emit("multi_hop_retrieval", f"Starting hop {hop + 1}")
 
-            retrieved_chunks, metadatas = self.retriever.retrieve(
-                query=current_query,
-                keyword=keyword,
-                where_filter=where_filter,
-                seen_urls=seen_urls
-            )
-            
-            retrieved_chunks = retrieved_chunks[:self.top_k]
-            metadatas  = metadatas[:self.top_k]
+            retrieve_kwargs = {
+                "query":        current_query,
+                "keyword":      keyword,
+                "where_filter": where_filter,
+            }
+            if self._inner_accepts_seen_urls:
+                retrieve_kwargs["seen_urls"] = seen_urls
+
+            try:
+                retrieved_chunks, metadatas = self.retriever.retrieve(**retrieve_kwargs)
+                retrieved_chunks = retrieved_chunks[:self.top_k]
+                metadatas  = metadatas[:self.top_k]
+            except Exception as exc:
+                # A dead hop must not throw away what earlier hops already found.
+                logger.error(
+                    f"[Hop {hop + 1}] retrieval failed, keeping the "
+                    f"{len(all_chunks)} chunks gathered so far: {exc}"
+                )
+                self.emitter.emit(
+                    "multi_hop_retrieval",
+                    f"Hop {hop + 1} retrieval failed. Continuing with chunks gathered so far."
+                )
+                break
 
             self.emitter.emit("multi_hop_retrieval", f"Retrieved {len(retrieved_chunks)} chunks in hop {hop + 1}")
 
@@ -184,9 +255,8 @@ class MultiHopRetriever:
                 self.emitter.emit("multi_hop_retrieval", "No new unique chunks found. Stopping.")
                 break
 
-            for idx, (chunk, meta) in enumerate(zip(new_chunks, new_metas), start=1):
-                all_chunks.append(chunk)
-                all_metadata.append(meta)
+            all_chunks.extend(new_chunks)
+            all_metadata.extend(new_metas)
 
             bridge = self._extract_bridge_or_done(
                 original_query=query,
@@ -202,26 +272,49 @@ class MultiHopRetriever:
         top_chunks = all_chunks
         top_metas = all_metadata
         
-        if len(all_chunks) > self.top_k:
-            scores = self.evaluator.score_docs(query, all_chunks) 
+        # Without an evaluator there is nothing to rank by, so the whole pool is
+        # handed on — HybridRAG re-ranks the merged result downstream anyway.
+        if self.evaluator is not None and len(all_chunks) > self.top_k:
+            try:
+                scores = self.evaluator.score_docs(query, all_chunks)
 
-            ranked = sorted(
-                zip(scores, all_chunks, all_metadata),
-                key=lambda x: x[0],
-                reverse=True
-            )
+                ranked = sorted(
+                    zip(scores, all_chunks, all_metadata),
+                    key=lambda x: x[0],
+                    reverse=True
+                )
 
-            top_chunks = [c for _, c, _ in ranked[:self.top_k]]
-            top_metas  = [m for _, _, m in ranked[:self.top_k]]
+                top_chunks = [c for _, c, _ in ranked[:self.top_k]]
+                top_metas  = [m for _, _, m in ranked[:self.top_k]]
 
-            logger.info(f"[multi_hop_retrieve] pool={len(all_chunks)}, returning top-{self.top_k} after re-rank")
-            logger.info(f"[multi_hop_retrieve] top scores: {[round(s,3) for s,_,_ in ranked[:self.top_k]]}")
+                logger.info(f"[multi_hop_retrieve] pool={len(all_chunks)}, returning top-{self.top_k} after re-rank")
+                logger.info(f"[multi_hop_retrieve] top scores: {[round(s,3) for s,_,_ in ranked[:self.top_k]]}")
+            except Exception as exc:
+                # Scoring needs the embedding model; unranked chunks still answer the
+                # question, so fall back to retrieval order instead of returning nothing.
+                logger.error(f"[multi_hop_retrieve] re-rank failed, returning first {self.top_k} chunks unranked: {exc}")
+                top_chunks = all_chunks[:self.top_k]
+                top_metas  = all_metadata[:self.top_k]
 
         return top_chunks, top_metas
     
     def retrieve(self, query: str, keyword: str = None, where_filter: Dict = None) -> tuple[List[str], List[Dict]]:
         return self.multi_hop_retrieve(query, keyword, where_filter)
     
+    def set_max_hops(self, max_hops: int) -> None:
+        """
+        Hop count is going to be user-configurable; clamp so the loop always runs once.
+        """
+        try:
+            hops = int(max_hops)
+        except (TypeError, ValueError):
+            # A malformed user setting should not break retrieval — keep the current value.
+            logger.warning(f"[MultiHop] Ignoring invalid max_hops={max_hops!r}, keeping {self.max_hops}")
+            return
+
+        self.max_hops = max(1, hops)
+        logger.info(f"[MultiHop] max_hops set to {self.max_hops}")
+
     def set_emitter(self, emitter):
         self.emitter = emitter
         self.retriever.set_emitter(emitter)

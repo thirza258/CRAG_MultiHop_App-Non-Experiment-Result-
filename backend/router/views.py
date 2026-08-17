@@ -11,12 +11,12 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
-from common.memory import compute_file_hash
+from common.memory import compute_file_hash, compute_text_hash
+from common.pipeline_config import normalize_pipeline_config
 from utils.insert_file import get_loader
 from router.models import (
-    Document, 
-    GuestUser, Job,
-    AnalysisBatch, AnalysisResult, 
+    Document,
+    GuestUser,
     Conversation, ConversationHistory, UserCollection, DocumentChunk
 )
 from router.tasks import build_index_task
@@ -100,13 +100,15 @@ class InsertURLView(GenericAPIView):
             serializer.is_valid(raise_exception=True)
 
             username = serializer.validated_data["USER"]
-            file = serializer.validated_data["FILE"]
+            # Reads URL, not FILE: this view's serializer has no FILE field, so the
+            # old lookup raised KeyError and every URL submission became a 500.
+            url = serializer.validated_data["URL"]
 
             user = GuestUser.objects.get(username=username)
 
-            file_hash = compute_file_hash(file)
+            file_hash = compute_text_hash(url)
 
-            data = get_loader().process_input(file, username)
+            data = get_loader().process_input(url, username)
 
             try:
                 with transaction.atomic():
@@ -156,13 +158,15 @@ class InsertTextView(GenericAPIView):
             serializer.is_valid(raise_exception=True)
 
             username = serializer.validated_data["USER"]
-            file = serializer.validated_data["FILE"]
+            # Reads TEXT, not FILE — same defect as InsertURLView: the serializer
+            # defines TEXT, so the old lookup made every paste a 500.
+            text = serializer.validated_data["TEXT"]
 
             user = GuestUser.objects.get(username=username)
 
-            file_hash = compute_file_hash(file)
+            file_hash = compute_text_hash(text)
 
-            data = get_loader().process_input(file, username)
+            data = get_loader().process_input(text, username)
 
             try:
                 with transaction.atomic():
@@ -284,10 +288,20 @@ class QueryView(GenericAPIView):
 
             username = serializer.validated_data["USER"]
             query = serializer.validated_data["QUERY"]
-            
-            self.save_conversation(username, query, "", "")
-            
-            answer = get_registry().get_engine().run(username, query)
+            pipeline_config = normalize_pipeline_config(
+                serializer.validated_data.get("CONFIG")
+            )
+
+            conversation = self.save_conversation(username, query, "", "")
+
+            # conversation_id was previously omitted here, which raised TypeError
+            # because run() required it — this endpoint always 500'd.
+            answer = get_registry().get_engine().run(
+                username,
+                query,
+                conversation_id=conversation.pk,
+                config=pipeline_config,
+            )
             
             retrieved_chunks = answer.get("context", [])
             llm_answer = answer.get("answer", "")

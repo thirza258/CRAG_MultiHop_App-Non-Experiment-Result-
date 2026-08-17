@@ -34,40 +34,6 @@ def create_chroma_collection(collection_name: str):
         logger.warning(f"Collection already exists: {collection_name}, retrieving existing collection.")
         return client.get_collection(name=collection_name, embedding_function=None)
 
-def delete_document_from_collection(document_id: int, username: str):
-    """
-    Deletes all chunks of a document from ChromaDB and Django DB.
-    The UserCollection itself stays intact.
-    """
-
-    document = Document.objects.get(pk=document_id)
-    user_collection = UserCollection.objects.get(user__username=username)
-
-    # 1. Get all chroma_ids for this document
-    chunk_records = DocumentChunk.objects.filter(
-        document=document,
-        user_collection=user_collection
-    )
-    chroma_ids = list(chunk_records.values_list("chroma_id", flat=True))
-
-    if not chroma_ids:
-        logger.warning(f"No chunks found for document {document_id}")
-        return
-
-    # 2. Delete from ChromaDB by IDs
-    collection = get_chroma_client(collection_name=user_collection.collection_name)
-    collection.delete(ids=chroma_ids)
-
-    # 3. Update chunk_count
-    deleted_count = len(chroma_ids)
-    user_collection.chunk_count = max(0, user_collection.chunk_count - deleted_count)
-    user_collection.save()
-
-    # 4. Delete from Django DB (cascades from Document or manual)
-    chunk_records.delete()
-
-    logger.info(f"Deleted {deleted_count} chunks for document {document_id}")
-    
 def insert_chunk_to_chromadb(
     collection_name: str,
     chunks: List[str],
