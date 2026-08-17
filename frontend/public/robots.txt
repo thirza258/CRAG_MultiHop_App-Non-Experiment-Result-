@@ -1,0 +1,11 @@
+# https://crag.nevatal.tech
+# Indexable pages: /, /docs, /about — everything else is app surface.
+
+User-agent: *
+Disallow: /chat
+Disallow: /login
+Disallow: /error
+Disallow: /api/
+Disallow: /ws/
+
+Sitemap: https://crag.nevatal.tech/sitemap.xml

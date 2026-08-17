@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Menu, X, User, LogOut, Settings, CreditCard } from "lucide-react";
 import { Button } from "../components/ui/button";
 import {
@@ -44,18 +44,22 @@ const Navbar: React.FC = () => {
       <div className="container mx-auto px-6 h-16 flex items-center justify-between">
         
         {/* Logo Section */}
-        <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate("/")}>
-        
-          <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-            Corrective - Multihop - Reranker RAG
+        <Link to="/" className="flex items-center gap-2" aria-label="CRAG MultiHop RAG — home">
+          {/* The full name doesn't fit a 64px bar on phones. */}
+          <span className="whitespace-nowrap text-lg sm:text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
+            <span className="md:hidden">CRAG MultiHop RAG</span>
+            <span className="hidden md:inline">
+              Corrective · Multihop · Reranker RAG
+            </span>
           </span>
-        </div>
+        </Link>
 
         {/* Desktop Menu */}
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-400">
-          <a href="/" className="hover:text-cyan-400 transition-colors">Home</a>
-          <a href="/docs" className="hover:text-cyan-400 transition-colors">Docs</a>
-          <a href="/about" className="hover:text-cyan-400 transition-colors">About</a>
+          <Link to="/" className="hover:text-cyan-400 transition-colors">Home</Link>
+          <Link to="/chat" className="hover:text-cyan-400 transition-colors">Chat</Link>
+          <Link to="/docs" className="hover:text-cyan-400 transition-colors">Docs</Link>
+          <Link to="/about" className="hover:text-cyan-400 transition-colors">About</Link>
         </div>
 
 
@@ -106,10 +110,9 @@ const Navbar: React.FC = () => {
           ) : (
 
             <>
-              <Button variant="ghost" onClick={() => navigate("/login")} className="text-slate-300 hover:text-white hover:bg-slate-800">
-                Sign In
-              </Button>
-              <Button onClick={() => navigate("/register")} className="bg-cyan-600 hover:bg-cyan-700 text-white">
+              {/* Sign-in is the only entry point — there is no separate
+                  registration flow, a username and email creates the account. */}
+              <Button onClick={() => navigate("/login")} className="bg-cyan-600 hover:bg-cyan-700 text-white">
                 Get Started
               </Button>
             </>
@@ -119,6 +122,8 @@ const Navbar: React.FC = () => {
         <button
           className="md:hidden text-white hover:bg-slate-800 p-2 rounded-md"
           onClick={() => setIsMenuOpen(!isMenuOpen)}
+          aria-label={isMenuOpen ? "Close menu" : "Open menu"}
+          aria-expanded={isMenuOpen}
         >
           {isMenuOpen ? <X /> : <Menu />}
         </button>
@@ -127,9 +132,11 @@ const Navbar: React.FC = () => {
 
       {isMenuOpen && (
         <div className="md:hidden bg-slate-900 border-b border-slate-800 p-4 flex flex-col gap-4 animate-in slide-in-from-top-5">
-          <a href="/" className="text-slate-300 hover:text-cyan-400">Home</a>
-          <a href="/about" className="text-slate-300 hover:text-cyan-400">About</a>
-          
+          <Link to="/" onClick={() => setIsMenuOpen(false)} className="text-slate-300 hover:text-cyan-400">Home</Link>
+          <Link to="/chat" onClick={() => setIsMenuOpen(false)} className="text-slate-300 hover:text-cyan-400">Chat</Link>
+          <Link to="/docs" onClick={() => setIsMenuOpen(false)} className="text-slate-300 hover:text-cyan-400">Docs</Link>
+          <Link to="/about" onClick={() => setIsMenuOpen(false)} className="text-slate-300 hover:text-cyan-400">About</Link>
+
           <div className="h-px bg-slate-800 my-2" />
           
           {username ? (

@@ -1,12 +1,20 @@
 import React from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { ErrorState } from "../types/types";
+import { useSeo } from "../lib/seo";
 
 
 const ErrorPage: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  
+
+  useSeo({
+    title: "Page not found | CRAG MultiHop RAG",
+    description: "This page does not exist.",
+    path: location.pathname,
+    noindex: true,
+  });
+
   const state = location.state as ErrorState;
   
   const status = state?.status || 404;

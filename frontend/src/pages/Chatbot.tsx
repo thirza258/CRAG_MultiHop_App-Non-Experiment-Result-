@@ -8,6 +8,7 @@ import UrlUploadSection from "../components/file/URLInput";
 import TextUploadSection from "../components/file/TextInput";
 import { useNavigate } from "react-router-dom";
 import {WS_BASE_URL} from "../services/websocket";
+import { useSeo } from "../lib/seo";
 
 function Chatbot() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -24,6 +25,14 @@ function Chatbot() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const navigate = useNavigate();
+
+  useSeo({
+    title: "Chat with your documents | CRAG MultiHop RAG",
+    description:
+      "Ask questions about your uploaded PDFs, URLs and notes, and watch the corrective multi-hop retrieval pipeline answer them.",
+    path: "/chat",
+    noindex: true,
+  });
 
   useEffect(() => {
     const username = localStorage.getItem("username");

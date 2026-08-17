@@ -1,11 +1,20 @@
 import React, { useState } from "react";
 import  service  from "../services/service";
 import { useNavigate } from "react-router-dom";
+import { useSeo } from "../lib/seo";
 
 const LoginPage: React.FC = () => {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const navigate = useNavigate();
+
+  useSeo({
+    title: "Sign in | CRAG MultiHop RAG",
+    description:
+      "Sign in with a username and email to start chatting with your documents.",
+    path: "/login",
+    noindex: true,
+  });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,7 +32,7 @@ const LoginPage: React.FC = () => {
         localStorage.setItem("username", username);
         localStorage.setItem("email", email);
 
-        navigate("/");
+        navigate("/chat");
       })
       .catch(error => {
         navigate("/error", {
@@ -43,7 +52,7 @@ const LoginPage: React.FC = () => {
         onSubmit={handleSubmit}
       >
         <h1 className="text-2xl font-bold mb-6 text-center text-white">Welcome Back!</h1>
-        <h1 className="text-sm mb-6 text-center text-slate-400">RagReader alpha ver.</h1>
+        <p className="text-sm mb-6 text-center text-slate-400">CRAG MultiHop RAG — research build</p>
         <div className="w-full h-px bg-slate-700 my-4"></div>
         <h2 className="text-xl font-bold mb-4 text-center text-white">Login</h2>
         <div>
@@ -80,7 +89,7 @@ const LoginPage: React.FC = () => {
         </button>
         <button
           type="button"
-          onClick={() => navigate(-1)}
+          onClick={() => navigate("/")}
           className="w-full bg-slate-700 text-white py-2 rounded hover:bg-slate-600 transition-colors mt-2"
         >
           Go Back

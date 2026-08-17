@@ -193,12 +193,25 @@ docker compose exec backend python insert_base_dataset.py
 
 ## Using the app
 
-1. Open **<http://localhost:5151>** and log in (guest login — just pick a username).
+1. Open **<http://localhost:5151>**. `/` is the public landing page; **Get Started** takes you to `/login` (guest login — just pick a username and email), which lands you in the chat at `/chat`.
 2. **Add a document**: upload a PDF, paste text, or submit a URL.
 3. Wait for indexing to finish (the worker chunks the document, embeds it, and stores it in ChromaDB).
 4. **Chat**: ask questions about your document. The pipeline streams status updates (retrieval → grading → reranking → generation → evaluation) over a websocket, then shows the answer with its supporting chunks and faithfulness / answer-relevancy scores.
 
 If you haven't uploaded any documents, queries fall back to the shared base collection (see [Indexing the base dataset](#indexing-the-base-dataset-optional)).
+
+### Frontend routes
+
+| Route | Page | Indexed |
+|-------|------|---------|
+| `/` | Landing page — what the pipeline does, models, self-hosting, FAQ | yes |
+| `/docs` | Step-by-step walkthrough with screenshots | yes |
+| `/about` | Research background, evaluation metrics, scope of the deployment | yes |
+| `/chat` | The app (redirects to `/login` without a session) | no |
+| `/login` | Guest sign-in | no |
+| anything else | 404 page | no |
+
+Public-page metadata lives in `frontend/index.html` (static tags for social crawlers, which don't run JS) and `frontend/src/lib/seo.ts` (per-route title/description/canonical). `frontend/public/robots.txt` and `frontend/public/sitemap.xml` reference `https://crag.nevatal.tech` — change the domain there if you deploy elsewhere.
 
 ---
 

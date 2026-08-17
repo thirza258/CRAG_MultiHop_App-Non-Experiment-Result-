@@ -1,12 +1,33 @@
 import React from "react";
 import { steps } from "../components/data/DocsData";
+import { useSeo } from "../lib/seo";
+import Footer from "../components/Footer";
 
 
 const Docs: React.FC = () => {
+  useSeo({
+    title: "How to use the app, step by step | CRAG MultiHop RAG",
+    description:
+      "A walkthrough of the app: signing in, adding a PDF, URL or pasted text, waiting for indexing, chatting with the corrective multi-hop pipeline, and reading the retrieved chunks and evaluation scores.",
+    path: "/docs",
+  });
+
   return (
-    <div className="my-12 min-h-screen bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground">
+    <div className="pt-16 min-h-screen bg-background text-foreground font-sans selection:bg-primary selection:text-primary-foreground">
       <main className="container mx-auto px-4 py-12 max-w-5xl">
- 
+        <header className="mb-12 max-w-3xl">
+          <p className="text-sm font-semibold uppercase tracking-wider text-primary">
+            Documentation
+          </p>
+          <h1 className="mt-4 text-4xl md:text-5xl font-bold tracking-tight leading-tight">
+            Using the app, step by step
+          </h1>
+          <p className="mt-6 text-lg leading-relaxed text-muted-foreground">
+            Sign in, give the app something to read, then ask your question.
+            Each step below shows what happens on screen and what the pipeline
+            is doing behind it.
+          </p>
+        </header>
 
         <div className="relative border-l border-border ml-4 md:ml-6 space-y-12">
           {steps.map((step) => (
@@ -54,6 +75,7 @@ const Docs: React.FC = () => {
           ))}
         </div>
       </main>
+      <Footer />
     </div>
   );
 };
