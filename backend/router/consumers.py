@@ -15,6 +15,12 @@ from ragreader.settings import REDIS_HOST, REDIS_PORT
 
 logger = logging.getLogger(__name__)
 
+# Maximum time (seconds) the consumer will wait for the pipeline thread.
+_PIPELINE_TIMEOUT = 300
+# How long to wait between Redis poll attempts.
+_POLL_INTERVAL = 0.5
+
+
 class QueryStreamConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
@@ -23,6 +29,8 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
         pass
 
     async def receive(self, text_data):
+        pubsub = None
+        r = None
         try:
             data     = json.loads(text_data)
             logger.info(f"Received WebSocket message: {data}")
@@ -48,7 +56,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             channel = f"rag:status:{task_id}"
 
             import redis.asyncio as aioredis
-            r      = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+            r      = aioredis.Redis(
+                host=REDIS_HOST, port=REDIS_PORT, db=0,
+                socket_connect_timeout=5, socket_timeout=5,
+            )
             pubsub = r.pubsub()
             await pubsub.subscribe(channel)
             logger.info(f"Subscribed to Redis channel: rag:status:{task_id}")
@@ -56,7 +67,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             def run():
                 # Created outside the try so the except block can always
                 # publish the error back to the websocket loop.
-                r_sync = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+                r_sync = redis.Redis(
+                    host=REDIS_HOST, port=REDIS_PORT, db=0,
+                    socket_connect_timeout=5, socket_timeout=10,
+                )
                 try:
                     answer = get_registry().get_engine().run(
                         username, query, conversation_id=task_id, config=pipeline_config
@@ -84,24 +98,49 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                     }))
 
                 except Exception as e:
-                    r_sync.publish(f"rag:status:{task_id}", json.dumps({
-                        "stage": "error",
-                        "message": str(e)
-                    }))
+                    logger.error(
+                        f"Pipeline thread error for task {task_id}: {e}",
+                        exc_info=True,
+                    )
+                    try:
+                        r_sync.publish(f"rag:status:{task_id}", json.dumps({
+                            "stage": "error",
+                            "message": str(e)
+                        }))
+                    except Exception as pub_err:
+                        logger.error(
+                            f"Failed to publish error for task {task_id}: {pub_err}"
+                        )
+                finally:
+                    try:
+                        r_sync.close()
+                    except Exception:
+                        pass
+
             logger.info("Starting RAG pipeline thread")
-            threading.Thread(target=run).start()
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
             logger.info("RAG pipeline thread started")
            
-            timeout = 300  # 5 minutes max
-            elapsed = 0
+            elapsed = 0.0
             finished = False
 
-            while elapsed < timeout:
-                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            while elapsed < _PIPELINE_TIMEOUT:
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
+                except Exception as poll_err:
+                    logger.warning(
+                        f"Redis poll error (task {task_id}): {poll_err}"
+                    )
+                    await asyncio.sleep(_POLL_INTERVAL)
+                    elapsed += _POLL_INTERVAL
+                    continue
 
                 if message is None:
-                    await asyncio.sleep(0.1)
-                    elapsed += 0.1
+                    await asyncio.sleep(_POLL_INTERVAL)
+                    elapsed += _POLL_INTERVAL
                     continue
 
                 logger.info(f"Got Redis message: {message}")
@@ -121,16 +160,29 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                 # Don't leave the client hanging when the pipeline overruns.
                 await self.send(json.dumps({
                     "stage": "error",
-                    "message": f"Request timed out after {timeout}s. Please try again.",
+                    "message": f"Request timed out after {_PIPELINE_TIMEOUT}s. Please try again.",
                 }))
-
-            await pubsub.unsubscribe(channel)
-            await r.aclose()
-            logger.info("Done, connection closing cleanly")
 
         except Exception as e:
             logger.error(f"Consumer receive error: {e}", exc_info=True)
-            await self.send(json.dumps({"stage": "error", "message": str(e)}))
+            try:
+                await self.send(json.dumps({"stage": "error", "message": str(e)}))
+            except Exception:
+                pass  # WebSocket already closed
+        finally:
+            # Always clean up Redis resources
+            if pubsub is not None:
+                try:
+                    await pubsub.unsubscribe()
+                    await pubsub.aclose()
+                except Exception:
+                    pass
+            if r is not None:
+                try:
+                    await r.aclose()
+                except Exception:
+                    pass
+            logger.info("Done, connection closing cleanly")
             
     def save_conversation(self, username, query, answer, context, conversation_id=None):
         user = GuestUser.objects.get(username=username)

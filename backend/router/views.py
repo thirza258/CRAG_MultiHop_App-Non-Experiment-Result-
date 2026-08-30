@@ -79,10 +79,25 @@ class InsertDataView(GenericAPIView):
                     f"(id={document.pk}, status={document.status})"
                 )
 
-            build_index_task.delay(
-                document_id=document.pk,
-                username=username
-            )
+            try:
+                task = build_index_task.delay(
+                    document_id=document.pk,
+                    username=username
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Failed to enqueue indexing task for document %s: %s",
+                    self.__class__.__name__, document.pk, exc,
+                    exc_info=True,
+                )
+                # Mark the document so the user can see something went wrong
+                # and the sidebar doesn't show it stuck on "pending" forever.
+                document.status = "failed"
+                document.save(update_fields=["status"])
+                return get_responses().response_500(
+                    error="Background indexing could not be started. "
+                          "Please try again in a moment."
+                )
 
             return get_responses().response_200(
                 "Data inserted successfully!"
@@ -137,10 +152,25 @@ class InsertURLView(GenericAPIView):
                     f"(id={document.pk}, status={document.status})"
                 )
 
-            build_index_task.delay(
-                document_id=document.pk,
-                username=username
-            )
+            try:
+                task = build_index_task.delay(
+                    document_id=document.pk,
+                    username=username
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Failed to enqueue indexing task for document %s: %s",
+                    self.__class__.__name__, document.pk, exc,
+                    exc_info=True,
+                )
+                # Mark the document so the user can see something went wrong
+                # and the sidebar doesn't show it stuck on "pending" forever.
+                document.status = "failed"
+                document.save(update_fields=["status"])
+                return get_responses().response_500(
+                    error="Background indexing could not be started. "
+                          "Please try again in a moment."
+                )
 
             return get_responses().response_200(
                 "Data inserted successfully!"
@@ -195,10 +225,25 @@ class InsertTextView(GenericAPIView):
                     f"(id={document.pk}, status={document.status})"
                 )
 
-            build_index_task.delay(
-                document_id=document.pk,
-                username=username
-            )
+            try:
+                task = build_index_task.delay(
+                    document_id=document.pk,
+                    username=username
+                )
+            except Exception as exc:
+                logger.error(
+                    "[%s] Failed to enqueue indexing task for document %s: %s",
+                    self.__class__.__name__, document.pk, exc,
+                    exc_info=True,
+                )
+                # Mark the document so the user can see something went wrong
+                # and the sidebar doesn't show it stuck on "pending" forever.
+                document.status = "failed"
+                document.save(update_fields=["status"])
+                return get_responses().response_500(
+                    error="Background indexing could not be started. "
+                          "Please try again in a moment."
+                )
 
             return get_responses().response_200(
                 "Data inserted successfully!"

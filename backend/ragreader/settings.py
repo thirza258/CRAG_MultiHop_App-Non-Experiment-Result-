@@ -114,9 +114,40 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 
 CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_BACKEND = REDIS_URL
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = "UTC"
+
+# ── Reliability ──────────────────────────────────────────────────────────
+# Acknowledge tasks AFTER execution so a killed worker re-delivers them.
+CELERY_TASK_ACKS_LATE = True
+# If a worker is killed mid-task, reject the message so the broker
+# re-delivers it to another worker instead of silently dropping it.
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+# Hard kill after 10 minutes (soft limit at 8 gives the task time to
+# clean up).  Prevents runaway tasks from hogging a worker slot.
+CELERY_TASK_SOFT_TIME_LIMIT = 480
+CELERY_TASK_TIME_LIMIT = 600
+# Keep task results around for 24 hours so the status endpoint can
+# answer even for slow clients.
+CELERY_RESULT_EXPIRES = 86400
+# Redis broker transport options: visibility timeout must be larger than
+# the hard time limit, otherwise Redis re-delivers the message to a
+# second worker while the first is still running.
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": 900,
+    "retry_policy": {
+        "max_retries": 5,
+        "interval_start": 0.2,
+        "interval_step": 0.5,
+        "interval_max": 5.0,
+    },
+}
+# Prefetch one task at a time — prevents one worker from hoarding all
+# pending messages when the pipeline is CPU-heavy.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
 CHANNEL_LAYERS = {
     "default": {

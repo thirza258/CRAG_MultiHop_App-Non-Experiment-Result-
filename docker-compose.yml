@@ -5,8 +5,8 @@ services:
       dockerfile: Dockerfile
     # Named tag so the worker can reuse this exact image instead of
     # building (and storing) a second identical copy.
-    image: ragreader-backend:latest
-    container_name: rag_backend
+    image: cragreader-backend:latest
+    container_name: crag_backend
     ports:
       - "8051:8000"
     depends_on:
@@ -27,18 +27,18 @@ services:
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "ragreader.asgi:application"]
     restart: unless-stopped
     healthcheck:
-      # Healthy once daphne accepts connections — i.e. after migrations,
-      # base dataset prep and model download have finished.
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8000), timeout=3).close()"]
-      interval: 10s
-      timeout: 5s
-      retries: 120
-      start_period: 60s
+      # Uses the health endpoint which checks database + Redis connectivity,
+      # not just whether daphne accepts TCP connections.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/', timeout=5).read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 120s
 
   worker:
     # Same image as the backend — built once by the backend service.
-    image: ragreader-backend:latest
-    container_name: rag_worker
+    image: cragreader-backend:latest
+    container_name: crag_worker
     command: ["celery", "-A", "ragreader", "worker", "-l", "info"]
     depends_on:
       postgres:
@@ -63,12 +63,18 @@ services:
       - media:/app/media
       - vectorstores:/app/vector_stores
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "celery", "-A", "ragreader", "inspect", "ping", "--timeout", "5"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: rag_frontend
+    container_name: crag_frontend
     ports:
       - "5151:5176"
     depends_on:
@@ -93,7 +99,7 @@ services:
 
   chromadb:
     image: chromadb/chroma:latest
-    container_name: rag_chromadb
+    container_name: crag_chromadb
     ports:
       - "8002:8000"
     volumes:
@@ -106,7 +112,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: rag_postgres
+    container_name: crag_postgres
     ports:
       - "5432:5432"
     environment:

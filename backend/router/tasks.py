@@ -1,4 +1,5 @@
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from .models import DocumentChunk, Document
 from rag.rag_service import get_registry
 from django.db import transaction
@@ -7,7 +8,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, max_retries=3)
+
+@shared_task(
+    bind=True,
+    max_retries=3,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
 def build_index_task(self, document_id: int, username: str):
     try:
 
@@ -65,7 +72,22 @@ def build_index_task(self, document_id: int, username: str):
         logger.error(f"[Task] Document {document_id} not found")
         raise
 
+    except SoftTimeLimitExceeded:
+        logger.error(
+            f"[Task] Document {document_id} indexing timed out"
+        )
+        document = Document.objects.filter(pk=document_id).first()
+        if document:
+            document.status = "failed"
+            document.save(update_fields=["status"])
+        # Don't retry on timeout — the task is inherently too slow
+        raise
+
     except Exception as e:
+        logger.error(
+            f"[Task] Document {document_id} indexing failed: {e}",
+            exc_info=True,
+        )
 
         document = Document.objects.filter(pk=document_id).first()
 

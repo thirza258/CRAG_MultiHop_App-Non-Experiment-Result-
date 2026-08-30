@@ -7,7 +7,7 @@ import FileUploadSection from "../components/file/FileInput";
 import UrlUploadSection from "../components/file/URLInput";
 import TextUploadSection from "../components/file/TextInput";
 import { useNavigate } from "react-router-dom";
-import {WS_BASE_URL} from "../services/websocket";
+import { generateChatStream } from "../services/websocket";
 import { useSeo } from "../lib/seo";
 import { usePipelineConfig } from "../context/PipelineConfigContext";
 
@@ -71,23 +71,13 @@ function Chatbot() {
 
   const username = localStorage.getItem("username") || "";
 
-  const ws = new WebSocket(`${WS_BASE_URL}/ws/query/stream/`);
-  wsRef.current = ws;
-
-  ws.onopen = () => {
-    ws.send(
-      JSON.stringify({
-        USER: username,
-        QUERY: input,
-        CONFIG: configRef.current,
-      })
-    );
-  };
-
-  ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-  switch (msg.stage) {
-    case "result":
+  const ws = generateChatStream(
+    input,
+    username,
+    // onStatus
+    (statusMsg) => setStatusText(statusMsg),
+    // onResult
+    (msg) => {
       sessionStorage.removeItem(`chat_history_${username}`);
       setMessages((prev) => [...prev, {
         user: "bot",
@@ -101,30 +91,20 @@ function Chatbot() {
       console.log("Evaluation received:", msg.evaluation);
       setStatusText("");
       setChatLoading(false);
-      ws.close();
-      break;
-
-    case "error":
+    },
+    // onError
+    (errorMsg) => {
       setMessages((prev) => [...prev, {
         user: "bot",
-        text: "Sorry, something went wrong.",
+        text: errorMsg || "Sorry, something went wrong.",
       }]);
       setStatusText("");
       setChatLoading(false);
-      ws.close();
-      break;
-
-    default:
-      setStatusText(`${msg.stage} — ${msg.message}`);
-      break;
-  }
-};
-
-  ws.onerror = () => {
-    setMessages((prev) => [...prev, { user: "bot", text: "Connection lost." }]);
-    setChatLoading(false);
-    setStatusText("");
-  };
+    },
+    // config
+    configRef.current,
+  );
+  wsRef.current = ws;
 };
 
 // cleanup on unmount

@@ -335,7 +335,7 @@ DEVELOPMENT_MODE=true python manage.py test
 
 | Job | Steps |
 |-----|-------|
-| **Backend tests** | Python 3.11, CPU-only torch + `requirements.txt` (same two-step install as the Dockerfile), NLTK data, `manage.py check`, `makemigrations --check` (fails if a model change has no migration), then the full test suite. |
+| **Backend tests** | Python 3.14, CPU-only torch + `requirements.txt` (same two-step install as the Dockerfile), NLTK data, `manage.py check`, `makemigrations --check` (fails if a model change has no migration), then the full test suite. |
 | **Frontend** | Node 20, `npm ci`, `npm run build` (which is `tsc -b && vite build`, so it typechecks too). Lint runs but is non-blocking while pre-existing lint errors are cleaned up. |
 
 The backend job deliberately points `CHROMA_HOST`/`REDIS_HOST` at non-existent hosts, so a test that forgets to mock a service fails fast instead of hanging.
@@ -346,7 +346,7 @@ The backend job deliberately points `CHROMA_HOST`/`REDIS_HOST` at non-existent h
 
 ### Prerequisites
 
-- Python **3.11+**, Node.js + npm
+- Python **3.14+**, Node.js + npm
 - Running **Redis** server
 - Running **ChromaDB** server (`pip install chromadb && chroma run --port 8000`)
 - PostgreSQL — *or* set `DEVELOPMENT_MODE=true` to use SQLite
