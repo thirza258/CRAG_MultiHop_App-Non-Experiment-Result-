@@ -16,6 +16,12 @@ export const generateChatStream = (
   onResult: (data: any) => void,
   onError: (message: string) => void,
   config?: Record<string, unknown>,
+  /**
+   * The user's own API keys, sent as their own top-level KEYS field rather than
+   * inside CONFIG. The server logs CONFIG verbatim and summarises it into the
+   * status events shown on screen; KEYS is redacted before either.
+   */
+  keys?: Record<string, unknown>,
 ) => {
   let attempt = 0;
 
@@ -26,6 +32,7 @@ export const generateChatStream = (
       attempt = 0; // reset on successful connect
       const payload: Record<string, unknown> = { USER: username, QUERY: query };
       if (config) payload.CONFIG = config;
+      if (keys && Object.keys(keys).length) payload.KEYS = keys;
       ws.send(JSON.stringify(payload));
     };
 

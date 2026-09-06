@@ -22,21 +22,21 @@ const ErrorPage: React.FC = () => {
   const message = state?.message || "We couldn't find the page you were looking for.";
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white">
-      <div className="bg-slate-900 rounded-lg shadow-lg p-8 border border-slate-800 flex flex-col items-center max-w-md">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[hsl(var(--background))] text-[hsl(var(--foreground))]">
+      <div className="max-w-md rounded border border-[hsl(var(--border))] p-8 flex flex-col items-center">
         <div className="flex items-center space-x-3 mb-4">
-          <span className="text-5xl font-bold text-red-500">
+          <span className="text-5xl font-semibold text-[hsl(var(--muted-foreground))]" data-numeric>
             {status}
           </span>
-          <h1 className="text-3xl font-bold text-white">
+          <h1 className="text-2xl font-semibold">
             {error}
           </h1>
         </div>
-        <p className="mb-2 text-slate-400 text-center">
+        <p className="mb-2 text-center text-[hsl(var(--muted-foreground))]">
           {message}
         </p>
         <button
-          className="mt-6 px-6 py-2 rounded-md bg-cyan-600 text-white font-semibold hover:bg-cyan-700 transition-colors"
+          className="mt-6 rounded bg-[hsl(var(--primary))] px-5 py-2 text-sm font-medium text-[hsl(var(--primary-foreground))] hover:opacity-90"
           onClick={() => navigate("/")}
         >
           Back to Home

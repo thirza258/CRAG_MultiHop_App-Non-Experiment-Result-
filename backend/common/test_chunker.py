@@ -299,7 +299,45 @@ class SemanticChunkingTests(unittest.TestCase):
         chunks = self._chunker(client).chunk(self.TEXT)
 
         self.assertEqual(chunks, ["Cats purr. Cats nap.", "Bridges span rivers."])
-        self.assertEqual(client.calls, [(self.SENTENCES, "text-embedding-3-small")])
+        # The default is the OpenRouter-routable id. The bare "text-embedding-3-small"
+        # this used to hardcode is an OpenAI-only name and 404s against the
+        # OpenRouter endpoint every other embedding call in the app uses.
+        self.assertEqual(
+            client.calls, [(self.SENTENCES, "openai/text-embedding-3-small")]
+        )
+
+    def test_the_embedding_model_is_configurable(self):
+        # Semantic splitting embeds sentences only to find split points and
+        # throws the vectors away, so any model is safe here — unlike the one a
+        # collection is indexed with.
+        client = _stub_embedding_client(vectors=[[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        chunker = DocumentChunker(
+            strategy="semantic",
+            chunk_size=500,
+            overlap=5,
+            embedding_client=client,
+            embedding_model="baai/bge-m3",
+        )
+
+        chunker.chunk(self.TEXT)
+
+        self.assertEqual(client.calls, [(self.SENTENCES, "baai/bge-m3")])
+
+    def test_a_failed_embedding_call_is_not_swallowed(self):
+        """It used to return one chunk per sentence and print.
+
+        Replaces test_embedding_failure_degrades_to_one_chunk_per_sentence,
+        which asserted that behaviour.
+
+        A document stored that way is indistinguishable afterwards from one
+        that chunked correctly, and the upload reported success. Raising lets
+        the indexing task retry a transient API failure and fail the document
+        if it does not recover.
+        """
+        client = _stub_embedding_client(error=RuntimeError("502 upstream"))
+
+        with self.assertRaisesRegex(RuntimeError, "502 upstream"):
+            self._chunker(client).chunk(self.TEXT)
 
     def test_chunk_size_caps_a_group_of_similar_sentences(self):
         client = _stub_embedding_client(
@@ -307,13 +345,6 @@ class SemanticChunkingTests(unittest.TestCase):
         )
 
         chunks = self._chunker(client, chunk_size=1).chunk(self.TEXT)
-
-        self.assertEqual(chunks, self.SENTENCES)
-
-    def test_embedding_failure_degrades_to_one_chunk_per_sentence(self):
-        client = _stub_embedding_client(error=RuntimeError("no network"))
-
-        chunks = self._chunker(client).chunk(self.TEXT)
 
         self.assertEqual(chunks, self.SENTENCES)
 

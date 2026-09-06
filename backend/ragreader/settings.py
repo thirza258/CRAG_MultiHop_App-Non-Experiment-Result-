@@ -259,9 +259,19 @@ USE_TZ = True
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        # Users can bring their own API keys, which are in scope for the whole
+        # request. Individual call sites scrub the messages they build, but
+        # exc_info=True renders the original exception past them — so every
+        # record goes through this on the way to the handler.
+        "scrub_secrets": {
+            "()": "common.runtime.log_filters.SecretScrubbingFilter",
+        },
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+            "filters": ["scrub_secrets"],
         },
     },
     "loggers": {

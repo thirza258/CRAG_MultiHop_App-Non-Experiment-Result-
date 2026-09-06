@@ -120,7 +120,7 @@ const FileSubmit: React.FC<FileSubmitProps> = ({
       <button
         onClick={handleSubmit}
         disabled={isLoading}
-        className="w-full bg-blue-500 text-white py-2 px-4 rounded hover:bg-blue-600 disabled:bg-blue-300 disabled:cursor-not-allowed"
+        className="w-full rounded bg-[hsl(var(--primary))] px-4 py-2 text-sm font-medium text-[hsl(var(--primary-foreground))] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {isLoading ? "Submitting..." : "Submit"}
       </button>

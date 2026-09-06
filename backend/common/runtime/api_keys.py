@@ -11,7 +11,7 @@ inside it would end up in the log file and on the client's screen. Keeping the
 two apart means ``CONFIG`` stays freely loggable and every secret goes through
 :func:`redact` / :func:`scrub` on the way out.
 
-The contract mirrors :mod:`common.pipeline_config`: **absent, partial or
+The contract mirrors :mod:`common.runtime.config`: **absent, partial or
 malformed input normalises to "no key supplied"**, which falls back to the
 server's environment. Nothing in here raises.
 """

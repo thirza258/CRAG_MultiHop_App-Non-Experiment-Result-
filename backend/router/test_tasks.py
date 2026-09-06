@@ -192,6 +192,30 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
         # delivery would hit the duplicate guard and never index it.
         self.assertEqual(self._stored_status(), "failed")
 
+    def test_an_unsupported_setting_fails_the_document_without_retrying(self):
+        """A retry cannot fix a setting this deployment does not support.
+
+        Retrying spends four attempts over seven minutes to reproduce the same
+        failure, and leaves the document sitting in the queue while it does.
+        The user has to change the setting and re-upload either way.
+        """
+        from common.runtime.errors import UnsupportedConfiguration
+
+        self.pipeline._build_index.side_effect = UnsupportedConfiguration(
+            "Semantic chunking needs an embedding client and none is available"
+        )
+        retry = self._patch(
+            tasks.build_index_task,
+            "retry",
+            mock.Mock(side_effect=_RetryRequested("retry requested")),
+        )
+
+        with self.assertRaises(UnsupportedConfiguration):
+            self._call()
+
+        retry.assert_not_called()
+        self.assertEqual(self._stored_status(), "failed")
+
     def test_missing_document_id_raises_does_not_exist(self):
         missing_id = self.document.pk + 1000
         retry = self._patch(

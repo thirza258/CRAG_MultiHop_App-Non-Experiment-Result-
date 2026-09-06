@@ -9,8 +9,10 @@ import redis
 
 from router.models import Conversation, ConversationHistory, GuestUser
 from rag.rag_service import get_registry
-from common.pipeline_config import describe as describe_config
-from common.pipeline_config import normalize_pipeline_config
+from common.runtime import api_keys as api_keys_module
+from common.runtime.api_keys import normalize_api_keys
+from common.runtime.config import describe as describe_config
+from common.runtime.config import normalize_pipeline_config
 from ragreader.settings import REDIS_HOST, REDIS_PORT
 
 logger = logging.getLogger(__name__)
@@ -31,14 +33,21 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data):
         pubsub = None
         r = None
+        # Bound up front so the error path can always scrub against it, even
+        # when the frame fails to parse before the keys are read.
+        api_keys = {}
         try:
             data     = json.loads(text_data)
-            logger.info(f"Received WebSocket message: {data}")
+            # Redacted: the payload carries the user's own API keys, and this log
+            # line used to write the whole thing out verbatim.
+            logger.info(f"Received WebSocket message: {api_keys_module.redact(data)}")
             username = data.get("USER")
             query    = data.get("QUERY")
-            # Normalised here rather than deeper in, so a malformed CONFIG from any
-            # client degrades to the default pipeline instead of failing the query.
+            # Both normalised here rather than deeper in, so a malformed CONFIG or
+            # KEYS block from any client degrades to the defaults (and the server's
+            # own credentials) instead of failing the query.
             pipeline_config = normalize_pipeline_config(data.get("CONFIG"))
+            api_keys = normalize_api_keys(data.get("KEYS"))
 
             if not username or not query:
                 await self.send(json.dumps({
@@ -48,7 +57,8 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
 
             logger.info(
                 f"Starting RAG pipeline for user: {username}, query: {query}, "
-                f"config: {describe_config(pipeline_config)}"
+                f"config: {describe_config(pipeline_config)}, "
+                f"{api_keys_module.describe(api_keys)}"
             )
 
             conversation = await sync_to_async(self.save_conversation)(username, query, "", "", None)  
@@ -73,7 +83,8 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                 )
                 try:
                     answer = get_registry().get_engine().run(
-                        username, query, conversation_id=task_id, config=pipeline_config
+                        username, query, conversation_id=task_id,
+                        config=pipeline_config, keys=api_keys,
                     )
                     logger.info(f"RAG pipeline completed for task_id: {task_id}, answer: {answer}")
 
@@ -94,7 +105,12 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                         "answer": llm_answer,
                         "context": retrieved_chunks,
                         "conversation_id": answer_record.pk,
-                        "evaluation": evaluation
+                        "evaluation": evaluation,
+                        # What the pipeline could not honour verbatim — e.g. the
+                        # corpus is indexed with a different embedding model than
+                        # the one selected. The client shows these with the answer.
+                        "notices": answer.get("notices", []),
+                        "degraded": answer.get("degraded", []),
                     }))
 
                 except Exception as e:
@@ -105,7 +121,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                     try:
                         r_sync.publish(f"rag:status:{task_id}", json.dumps({
                             "stage": "error",
-                            "message": str(e)
+                            # Provider SDKs quote the failing request — headers
+                            # included — into their exception messages, and this
+                            # string goes straight to the user's screen.
+                            "message": api_keys_module.scrub(str(e), api_keys),
                         }))
                     except Exception as pub_err:
                         logger.error(
@@ -164,9 +183,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                 }))
 
         except Exception as e:
-            logger.error(f"Consumer receive error: {e}", exc_info=True)
+            safe_message = api_keys_module.scrub(str(e), api_keys)
+            logger.error(f"Consumer receive error: {safe_message}", exc_info=True)
             try:
-                await self.send(json.dumps({"stage": "error", "message": str(e)}))
+                await self.send(json.dumps({"stage": "error", "message": safe_message}))
             except Exception:
                 pass  # WebSocket already closed
         finally:

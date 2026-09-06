@@ -7,6 +7,7 @@ from nltk.tokenize import word_tokenize
 from rank_bm25 import BM25Okapi
 from chroma.chroma_settings import get_chroma_client
 from common.nltk_setup import ensure_nltk_data
+from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
 import logging
 import numpy as np
@@ -27,8 +28,12 @@ class SparseRAG:
         self.documents: List[str] = []
         self.metadatas: List[Dict] = []
         self.tokenized_corpus: List[List[str]] = []
-        self.top_k = config.get("top_k", 5)
+        self._configured_top_k = config.get("top_k", 5)
         self._index_loaded = False
+        # Which stop-word setting the loaded index was tokenised with. The query
+        # is tokenised the same way at search time, so the two have to agree or
+        # BM25 is matching against terms the corpus no longer contains.
+        self._index_stop_words: bool = None
 
         # The pipeline injects the real emitter later via set_emitter(); until it
         # does, retrieve() must still be callable instead of raising AttributeError.
@@ -36,15 +41,64 @@ class SparseRAG:
 
         self.collection = get_chroma_client(collection_name=config.get('collection_name', 'sparse_rag_bm25'))
 
-        self.stop_words = set()
-        if config.get("remove_stop_words", True):
-            try:
-                self.stop_words = set(stopwords.words('english'))
-            except Exception as e:
-                # stopwords.words() reads the NLTK corpus from disk and raises
-                # LookupError when it is missing. BM25 still ranks without
-                # stop-word removal, so this must not kill construction.
-                logger.warning(f"[SPARSE] Stop-word list unavailable ({e}) — indexing without stop-word removal")
+        self._configured_remove_stop_words = bool(config.get("remove_stop_words", True))
+        # Loaded on first use rather than here: a request can switch stop-word
+        # removal on even when the deployment configured it off, so the list
+        # cannot be decided at construction — and a deployment that leaves it
+        # off should never touch the NLTK corpus at all.
+        self._stop_word_list = None
+
+    def _load_stop_words(self) -> set:
+        """The English stop-word list, read from NLTK once and cached."""
+        cached = getattr(self, "_stop_word_list", None)
+        if cached is not None:
+            return cached
+
+        try:
+            self._stop_word_list = set(stopwords.words('english'))
+        except Exception as e:
+            # stopwords.words() reads the NLTK corpus from disk and raises
+            # LookupError when it is missing. BM25 still ranks without
+            # stop-word removal, so this must not kill retrieval.
+            logger.warning(f"[SPARSE] Stop-word list unavailable ({e}) — indexing without stop-word removal")
+            self._stop_word_list = set()
+
+        return self._stop_word_list
+
+    @property
+    def top_k(self) -> int:
+        """How many chunks to return for this request."""
+        return int(resolve_param("top_k", getattr(self, "_configured_top_k", 5)))
+
+    @top_k.setter
+    def top_k(self, value) -> None:
+        # Assignment sets the *configured* default; a request still overrides it.
+        self._configured_top_k = value
+
+    @property
+    def remove_stop_words(self) -> bool:
+        """Whether this request wants English stop words dropped."""
+        return bool(
+            resolve_param(
+                "remove_stop_words",
+                getattr(self, "_configured_remove_stop_words", True),
+            )
+        )
+
+    @property
+    def stop_words(self) -> set:
+        """The stop words to actually strip, given this request's choice.
+
+        Empty when removal is off, and the NLTK corpus is not read at all in
+        that case.
+        """
+        if not self.remove_stop_words:
+            return set()
+        return self._load_stop_words()
+
+    @stop_words.setter
+    def stop_words(self, value) -> None:
+        self._stop_word_list = set(value or ())
 
     def _tokenize(self, text: str) -> List[str]:
         if not isinstance(text, str):
@@ -90,6 +144,19 @@ class SparseRAG:
         Returns False (never raises) when ChromaDB is unreachable or the corpus
         cannot be turned into a BM25 index — the caller reads that as "no results".
         """
+        # A cached index tokenised under a different stop-word setting cannot
+        # be searched with this request's tokenisation, so it is rebuilt rather
+        # than silently mismatched.
+        if getattr(self, "_index_loaded", False) and (
+            getattr(self, "_index_stop_words", None) != self.remove_stop_words
+        ):
+            logger.info(
+                "[SPARSE] Stop-word setting changed (%s -> %s) — rebuilding the BM25 index",
+                getattr(self, "_index_stop_words", None),
+                self.remove_stop_words,
+            )
+            self._index_loaded = False
+
         if self._index_loaded:
             return True
 
@@ -118,6 +185,7 @@ class SparseRAG:
             return False
 
         self._index_loaded = True
+        self._index_stop_words = self.remove_stop_words
         logger.info("BM25 index ready.")
         return True
 
@@ -193,6 +261,15 @@ class SparseRAG:
         """Swap collection at runtime without reinitializing."""
         self.collection_name = collection_name
         self.collection = get_chroma_client(collection_name=collection_name)
+        # The BM25 index is built from the collection's contents and cached
+        # behind _index_loaded, which nothing reset here. On a shared pipeline
+        # that meant the first collection queried after startup kept answering
+        # for every later one — including another user's documents.
+        self._index_loaded = False
+        self.bm25 = None
+        self.documents = []
+        self.metadatas = []
+        self.tokenized_corpus = []
         logger.info(f"[SparseRAG] Switched to collection: {collection_name}")
         
     def set_emitter(self, emitter):

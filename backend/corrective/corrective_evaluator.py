@@ -5,6 +5,8 @@ import logging
 import torch
 from common.memory import _local_model_path
 from common.nltk_setup import ensure_nltk_data
+from common.runtime.config import CORRECTIVE_THRESHOLDS
+from common.runtime.context import current_runtime, resolve_param
 from transformers import AutoTokenizer, AutoModel
 import torch.nn.functional as F
 from torch import Tensor
@@ -25,9 +27,50 @@ class CRAGEvaluator:
         self.model = AutoModel.from_pretrained(model_path).to(self.device)
         self.model.eval()
         
-        self.upper_threshold = config.get("upper_threshold", 0.7)
-        self.lower_threshold = config.get("lower_threshold", 0.3)
-        self.strip_threshold = config.get("strip_threshold", 0.5)
+        # The deployment's own tuning, used whenever a request expressed no
+        # strictness preference. Read through the properties below, never
+        # directly: a request can pick a preset instead.
+        self._configured_thresholds = {
+            "upper": config.get("upper_threshold", 0.7),
+            "lower": config.get("lower_threshold", 0.3),
+            "strip": config.get("strip_threshold", 0.5),
+        }
+
+    def _threshold(self, name: str) -> float:
+        """One grading threshold for this request.
+
+        A request picks a *preset* rather than three loose floats. The grader
+        normalises similarity into [0, 1], so real scores cluster in a narrow
+        band and the gap between "accept" and "escalate" is a few hundredths
+        wide — and the decision logic requires upper > lower. A preset cannot
+        express an inverted pair; three sliders can.
+        """
+        preset = resolve_param("corrective_strictness", "")
+        if preset and preset in CORRECTIVE_THRESHOLDS:
+            return CORRECTIVE_THRESHOLDS[preset][name]
+        return self._configured_thresholds[name]
+
+    @property
+    def upper_threshold(self) -> float:
+        return self._threshold("upper")
+
+    @property
+    def lower_threshold(self) -> float:
+        return self._threshold("lower")
+
+    @property
+    def strip_threshold(self) -> float:
+        return self._threshold("strip")
+
+    @property
+    def refinement_enabled(self) -> bool:
+        """Whether CRAG's strip-level refinement of ambiguous chunks runs.
+
+        Off, an ambiguous chunk stands exactly as it was retrieved: it is
+        neither promoted to "correct" nor discarded. That is the point — the
+        refinement pass is what does the promoting and discarding.
+        """
+        return bool(resolve_param("use_knowledge_refinement", True))
         
     def average_pool(self, last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
         last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
@@ -109,6 +152,15 @@ class CRAGEvaluator:
                 final_labels.append("correct")
 
             elif label == "ambiguous":
+                if not self.refinement_enabled:
+                    # Guarded here rather than relying on knowledge_refinement's
+                    # return value, so the chunk is kept without paying for the
+                    # re-scoring pass that refinement would have needed.
+                    filtered_docs.append(doc)
+                    filtered_metas.append(meta)
+                    final_labels.append("ambiguous")
+                    continue
+
                 refined = self.knowledge_refinement(query, doc)
                 if not refined:
                     filtered_docs.append(doc)
@@ -181,6 +233,12 @@ class CRAGEvaluator:
         Decompose → score each strip → recompose relevant strips in order.
         Takes single doc, returns refined string (not concat of all docs).
         """
+        if not self.refinement_enabled:
+            # The doc unchanged, deliberately not "" — CorrectiveRAG's external
+            # paths treat a falsy return as "nothing to keep" and would drop the
+            # chunk entirely.
+            return doc
+
         strips = self._segment_doc(doc)
 
         if not strips:

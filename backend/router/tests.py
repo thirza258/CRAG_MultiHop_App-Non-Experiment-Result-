@@ -32,7 +32,7 @@ try:
         UserCollection,
     )
     from authentication import views as auth_views
-    from common.pipeline_config import DEFAULT_PIPELINE_CONFIG, MAX_HOPS
+    from common.runtime.config import DEFAULT_PIPELINE_CONFIG, MAX_HOPS
     from pipeline.app_pipeline import AppRAGPipeline
     IMPORT_ERROR = ""
 except Exception as exc:  # needs Django + the heavy pipeline import chain
@@ -180,7 +180,11 @@ class InsertDataAPITests(RouterAPITestCase):
         self.assertEqual(len(document.file_hash), 64)  # sha256 hexdigest
 
         self.build_index_task.delay.assert_called_once_with(
-            document_id=document.pk, username="alice"
+            document_id=document.pk,
+            username="alice",
+            # No models or keys were chosen, so there is nothing to hand the
+            # worker and it uses the server's own configuration.
+            runtime_token=None,
         )
 
     def test_reposting_identical_content_neither_duplicates_nor_reindexes(self):
@@ -195,7 +199,11 @@ class InsertDataAPITests(RouterAPITestCase):
         self.assertIn("already indexed", second.json()["data"])
         self.assertIn(f"id={document.pk}", second.json()["data"])
         self.build_index_task.delay.assert_called_once_with(
-            document_id=document.pk, username="alice"
+            document_id=document.pk,
+            username="alice",
+            # No models or keys were chosen, so there is nothing to hand the
+            # worker and it uses the server's own configuration.
+            runtime_token=None,
         )
 
         # KNOWN (minor) BUG: the loader runs before the dedup check, so a
@@ -252,8 +260,60 @@ class InsertTextAPITests(RouterAPITestCase):
         self.assertEqual(document.source_type, "text")
         self.assertEqual(document.status, "pending")
         self.build_index_task.delay.assert_called_once_with(
-            document_id=document.pk, username="alice"
+            document_id=document.pk,
+            username="alice",
+            # No models or keys were chosen, so there is nothing to hand the
+            # worker and it uses the server's own configuration.
+            runtime_token=None,
         )
+
+    def test_a_chosen_model_and_key_are_handed_to_the_worker_by_token(self):
+        # Indexing runs in another process, so the embedding model and the
+        # caller's key travel via a short-lived Redis entry — never as task
+        # arguments, which the broker persists and Celery logs on failure.
+        with mock.patch.object(
+            router_views, "stash_runtime", return_value="tok-123"
+        ) as stash:
+            resp = self.client.post(
+                self.URL,
+                {
+                    "USER": "alice",
+                    "TEXT": "some pasted notes",
+                    "CONFIG": {"embedding_model": "baai/bge-m3"},
+                    "KEYS": {"openrouter": "sk-or-v1-abcdef0123456789"},
+                },
+                content_type="application/json",
+            )
+
+        self.assertEqual(resp.status_code, 200)
+
+        settings_handed_over = stash.call_args.args[0]
+        self.assertEqual(settings_handed_over.embedding_model, "baai/bge-m3")
+        self.assertEqual(
+            settings_handed_over.keys["openrouter"], "sk-or-v1-abcdef0123456789"
+        )
+
+        document = Document.objects.get()
+        self.build_index_task.delay.assert_called_once_with(
+            document_id=document.pk, username="alice", runtime_token="tok-123"
+        )
+
+    def test_a_malformed_settings_blob_does_not_fail_the_upload(self):
+        # Same contract as CONFIG on the query path: junk degrades to the
+        # defaults rather than rejecting the document.
+        resp = self.client.post(
+            self.URL,
+            {
+                "USER": "alice",
+                "TEXT": "some pasted notes",
+                "CONFIG": "not-an-object",
+                "KEYS": 42,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(self.build_index_task.delay.call_count, 1)
 
     def test_reposting_identical_text_neither_duplicates_nor_reindexes(self):
         payload = {"USER": "alice", "TEXT": "some pasted notes"}
@@ -314,7 +374,11 @@ class InsertURLAPITests(RouterAPITestCase):
         document = Document.objects.get()
         self.assertEqual(document.source_type, "url")
         self.build_index_task.delay.assert_called_once_with(
-            document_id=document.pk, username="alice"
+            document_id=document.pk,
+            username="alice",
+            # No models or keys were chosen, so there is nothing to hand the
+            # worker and it uses the server's own configuration.
+            runtime_token=None,
         )
 
     def test_resubmitting_the_same_url_neither_duplicates_nor_reindexes(self):
@@ -545,6 +609,55 @@ class QueryAPITests(RouterAPITestCase):
             payload if payload is not None else {"USER": "alice", "QUERY": "who wrote it?"},
             content_type="application/json",
         )
+
+    def test_supplied_keys_reach_the_engine_separately_from_the_config(self):
+        self.engine.run.return_value = dict(self.ENGINE_RESULT)
+
+        self._post(
+            {
+                "USER": "alice",
+                "QUERY": "who wrote it?",
+                "CONFIG": {"llm_model": "openai/gpt-4o"},
+                "KEYS": {"openrouter": "sk-or-v1-abcdef0123456789", "news": "n-123456789"},
+            }
+        )
+
+        kwargs = self.engine.run.call_args[1]
+        self.assertEqual(kwargs["keys"]["openrouter"], "sk-or-v1-abcdef0123456789")
+        self.assertEqual(kwargs["keys"]["news"], "n-123456789")
+        self.assertEqual(kwargs["config"]["llm_model"], "openai/gpt-4o")
+        # CONFIG is logged verbatim server-side, so no credential may be in it.
+        self.assertNotIn("sk-or-v1-abcdef0123456789", repr(kwargs["config"]))
+
+    def test_a_query_without_keys_sends_none_and_still_works(self):
+        self.engine.run.return_value = dict(self.ENGINE_RESULT)
+
+        resp = self._post()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            self.engine.run.call_args[1]["keys"], {"openrouter": "", "news": ""}
+        )
+
+    def test_a_supplied_key_is_scrubbed_out_of_an_error_response(self):
+        # Provider SDKs quote the failing request, Authorization header
+        # included, into their exception messages — and this one is rendered
+        # straight into the HTTP response body.
+        secret = "sk-or-v1-abcdef0123456789"
+        self.engine.run.side_effect = RuntimeError(
+            f"401 Unauthorized: {{'Authorization': 'Bearer {secret}'}}"
+        )
+
+        resp = self._post(
+            {
+                "USER": "alice",
+                "QUERY": "who wrote it?",
+                "KEYS": {"openrouter": secret},
+            }
+        )
+
+        self.assertEqual(resp.status_code, 500)
+        self.assertNotIn(secret, resp.content.decode())
 
     def test_engine_payload_is_returned_with_a_conversation_id(self):
         self.engine.run.return_value = dict(self.ENGINE_RESULT)

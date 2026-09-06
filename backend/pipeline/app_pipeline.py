@@ -17,12 +17,21 @@ from corrective.corrective_rag import CorrectiveRAG
 from multi_hop.multi_hop_rag import MultiHopRetriever
 from hybrid_rag.hybrid_rag import HybridRAG
 from common.chunker import DocumentChunker
+from common.runtime.errors import UnsupportedConfiguration
 from common.dataset_settings import convert_data_response_and_dataset_to_dataset
-from common.pipeline_config import describe as describe_config
-from common.pipeline_config import normalize_pipeline_config
+from common.runtime.config import describe as describe_config
+from common.runtime.config import normalize_pipeline_config
+from common.runtime.context import (
+    RuntimeSettings,
+    current_runtime,
+    pin_embedding_model,
+    resolve_param,
+    use_runtime,
+)
 from utils.insert_file import DataLoader
 import os
 from router.models import (
+    ChromaCollection,
     Document,
     DocumentVector,
     UserCollection,
@@ -86,14 +95,124 @@ class AppRAGPipeline():
         self.chunker = DocumentChunker()
         self.loader = DataLoader()
     
+    def _chunker_for_request(self, embedding_model: str) -> DocumentChunker:
+        """The chunker this upload asked for, or the shared default.
+
+        Chunking is an index-time decision for the same reason the embedding
+        model is: the chunks in a collection are already split, and re-splitting
+        only affects documents added from now on.
+
+        The default instance is reused when nothing was overridden, so the
+        common path allocates nothing. A chunker that cannot be built falls back
+        to the default only when the request did not name a strategy; an explicit
+        choice that cannot be honoured raises, because a document silently split
+        a different way looks identical to one split the way it was asked for.
+        """
+        default = self.chunker
+        # "" means the request expressed no preference. Kept separate from the
+        # resolved strategy because an *explicit* choice that cannot be honoured
+        # has to fail loudly, while falling back to the default never does.
+        requested = resolve_param("chunk_strategy", "")
+        strategy = requested or default.strategy
+
+        try:
+            chunk_size = int(resolve_param("chunk_size", default.chunk_size))
+            overlap = int(resolve_param("chunk_overlap", default.overlap))
+        except (TypeError, ValueError):
+            return default
+
+        if (strategy, chunk_size, overlap) == (
+            default.strategy, default.chunk_size, default.overlap
+        ) and strategy != "semantic":
+            return default
+
+        embedding_client = None
+        if strategy == "semantic":
+            # Semantic splitting embeds every sentence to find the topic shifts,
+            # so it needs a working client. Without one it is not available.
+            try:
+                embedding_client = self.dense_rag.client
+            except Exception as e:
+                if requested == "semantic":
+                    # They asked for it by name. Indexing the document split a
+                    # different way, and saying nothing, would be worse than
+                    # failing: the split is invisible once the chunks are stored.
+                    raise UnsupportedConfiguration(
+                        f"Semantic chunking needs an embedding client and none is "
+                        f"available ({e}). Add an OpenRouter key, or choose a "
+                        f"different chunking strategy."
+                    ) from e
+                logger.warning(
+                    f"[Pipeline] Semantic chunking unavailable ({e}) — using the "
+                    f"default {default.strategy} chunker"
+                )
+                return default
+
+        try:
+            return DocumentChunker(
+                strategy=strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                embedding_client=embedding_client,
+                embedding_model=embedding_model or default.embedding_model,
+            )
+        except Exception as e:
+            if requested:
+                raise UnsupportedConfiguration(
+                    f"Could not build a '{strategy}' chunker: {e}"
+                ) from e
+            logger.warning(
+                f"[Pipeline] Could not build a '{strategy}' chunker ({e}) — "
+                f"using the default {default.strategy} chunker"
+            )
+            return default
+
+    def _index_embedding_model(self, user_collection) -> str:
+        """The embedding model this document must be indexed with.
+
+        One Chroma collection holds one vector space, so the first document a
+        user indexes fixes the model for every later one. Their newer pick is
+        therefore honoured only while the collection is still empty; after that
+        the recorded model wins, because mixing widths inside a collection makes
+        it unqueryable rather than merely inconsistent.
+        """
+        chosen = current_runtime().embedding_model
+        configured = self._configured_embedding_model()
+
+        already_indexed = bool(
+            getattr(user_collection, "chunk_count", 0)
+            and getattr(user_collection, "embedding_model", "")
+        )
+        if already_indexed:
+            locked = str(user_collection.embedding_model)
+            if chosen and chosen != locked:
+                logger.info(
+                    f"[Pipeline] Indexing with '{locked}' rather than the selected "
+                    f"'{chosen}': collection '{user_collection.collection_name}' "
+                    f"already holds {user_collection.chunk_count} vectors from it."
+                )
+            return locked
+
+        return chosen or configured
+
     def _build_index(self, username: str, document: Document):
         user_collection, _ = UserCollection.objects.get_or_create(
             user=document.user,
             defaults={"collection_name": f"user_{username}_collection"}
         )
 
+        # Fixed before anything is embedded, and recorded afterwards, so the
+        # value on the record is always the model that actually produced the
+        # vectors — query-time pinning reads it and has to be able to trust it.
+        embedding_model = self._index_embedding_model(user_collection)
+
         raw_text = self.loader.load(document.extracted_text_path)
-        chunks = self.chunker.chunk(raw_text)
+        chunker = self._chunker_for_request(embedding_model)
+        logger.info(
+            f"[Pipeline] Chunking with strategy='{chunker.strategy}' "
+            f"size={chunker.chunk_size} overlap={chunker.overlap}"
+        )
+        chunks = chunker.chunk(raw_text)
 
         ids, texts, metadatas = [], [], []
         chunk_records = []
@@ -116,10 +235,25 @@ class AppRAGPipeline():
                 chunk_index=i,
             ))
             
-        embeddings = self.dense_rag._get_embeddings(texts, min(len(texts), 50))
+        # Scoped to just this call rather than pinned for the rest of the
+        # request: a Celery worker thread indexes one document after another, and
+        # a ContextVar left set would follow it into the next one.
+        with use_runtime(current_runtime().with_embedding_model(embedding_model)):
+            embeddings = self.dense_rag._get_embeddings(texts, min(len(texts), 50))
+
+        # Misaligned embeddings would attach each vector to the wrong chunk, so
+        # this is a hard stop rather than a partial insert. _get_embeddings drops
+        # a batch it could not embed, which is exactly how a wrong model id or a
+        # rejected key shows up here.
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"Embedding produced {len(embeddings)} vectors for {len(texts)} "
+                f"chunks using '{embedding_model}' — refusing to index a "
+                f"partially embedded document."
+            )
 
         # Insert into ChromaDB
-        insert_chunk_to_chromadb(
+        inserted = insert_chunk_to_chromadb(
             collection_name=user_collection.collection_name,
             chunks=texts,
             metadata=metadatas,
@@ -127,12 +261,30 @@ class AppRAGPipeline():
             batch_size=100
         )
 
+        # insert_chunk_to_chromadb swallows per-batch failures and reports them
+        # in its return value. Writing the DocumentChunk rows anyway would leave
+        # the database claiming chunks that Chroma does not have — and a
+        # dimension mismatch (the failure mode a changed embedding model
+        # actually causes) fails exactly this way.
+        if not inserted:
+            raise RuntimeError(
+                f"ChromaDB rejected one or more chunk batches for document "
+                f"{document.pk} in '{user_collection.collection_name}'. This is "
+                f"usually an embedding-model mismatch: the collection holds "
+                f"vectors from a different model than '{embedding_model}'."
+            )
+
         # Insert into Django DB
         DocumentChunk.objects.bulk_create(chunk_records)
 
-        # Update chunk count
+        # Update chunk count, and record the model that produced these vectors.
         user_collection.chunk_count += len(chunks)
-        user_collection.save()
+        user_collection.embedding_model = embedding_model
+        user_collection.save(update_fields=["chunk_count", "embedding_model", "updated_at"])
+        logger.info(
+            f"[Pipeline] Indexed {len(chunks)} chunks into "
+            f"'{user_collection.collection_name}' with '{embedding_model}'"
+        )
            
     def _resolve_collection(self, username: str) -> tuple[str, str]:
         """
@@ -222,13 +374,10 @@ class AppRAGPipeline():
         if chain is None:
             raise AttributeError(f"no {side} retriever is configured on this pipeline")
 
-        if cfg["use_multi_hop"]:
-            # Hop ceiling is per query, so it has to be applied every time rather
-            # than at construction.
-            try:
-                chain.set_max_hops(cfg["max_hops"])
-            except Exception as e:
-                logger.warning(f"[Pipeline] Could not apply max_hops={cfg['max_hops']}: {e}")
+        # The hop ceiling is deliberately *not* written onto the chain here.
+        # This pipeline is one shared instance, so assigning it per query meant
+        # two concurrent requests raced over a single attribute. MultiHopRetriever
+        # reads it from the request context instead.
 
         logger.info(f"[Pipeline] {side} chain: {type(chain).__name__}")
         return chain
@@ -263,9 +412,38 @@ class AppRAGPipeline():
         username: str,
         conversation_id: int,
         config: Dict[str, Any] = None,
+        keys: Dict[str, str] = None,
     ) -> dict:
         """
         Runs one query end to end.
+
+        Whatever the caller sent (or did not send) becomes a complete, valid
+        config here; the defaults reproduce the historic full pipeline exactly.
+
+        The model choice and the caller's API keys are installed as a
+        request-scoped runtime for the duration of the query. The pipeline is a
+        process-wide singleton, so they cannot be written onto it without one
+        user's credentials leaking into another's concurrent query — see
+        common.runtime.context.
+        """
+        cfg = normalize_pipeline_config(config)
+        runtime = RuntimeSettings.from_wire(cfg, keys)
+
+        logger.info(f"[Pipeline] Pipeline config: {describe_config(cfg)}")
+        logger.info(f"[Pipeline] Request runtime: {runtime.describe()}")
+
+        with use_runtime(runtime):
+            return self._run_configured(query, username, conversation_id, cfg)
+
+    def _run_configured(
+        self,
+        query: str,
+        username: str,
+        conversation_id: int,
+        cfg: Dict[str, Any],
+    ) -> dict:
+        """
+        The query itself, with a normalised config and a runtime already installed.
 
         Each stage is guarded on its own: a single broken dependency (Redis, one of
         the two retrievers, the reranker, the LLM) costs only that stage. The old
@@ -273,14 +451,11 @@ class AppRAGPipeline():
         evaluation scores whenever anything at all raised.
 
         The returned dict always carries answer / source / context / evaluation
-        plus "degraded", the list of stages that fell back (empty when healthy).
+        plus "degraded", the list of stages that fell back (empty when healthy),
+        and "notices", things the user chose that could not be honoured verbatim.
         """
         degraded: list[str] = []
-
-        # Whatever the caller sent (or did not send) becomes a complete, valid
-        # config here; the defaults reproduce the historic full pipeline exactly.
-        cfg = normalize_pipeline_config(config)
-        logger.info(f"[Pipeline] Pipeline config: {describe_config(cfg)}")
+        notices: list[str] = []
 
         # ── Status channel ────────────────────────────────────────────────────────
         try:
@@ -310,7 +485,7 @@ class AppRAGPipeline():
                 logger.info(f"[Pipeline] corpus='user' but {username} has no collection")
                 self._safe_emit(emitter, "retrieval_empty", "You have no indexed documents yet")
                 self._emit_degradations(emitter, degraded)
-                return self._no_context_result(source, degraded)
+                return self._no_context_result(source, degraded, notices)
         except Exception as e:
             # _resolve_collection already handles "user has no collection", so a raise
             # here means Chroma or the DB is unreachable — the shared dataset
@@ -324,6 +499,30 @@ class AppRAGPipeline():
             degraded.append("collection_resolve")
 
         self._safe_emit(emitter, "collection_resolved", f"Querying collection '{collection_name}' ({source})")
+
+        # ── 1b. Pin dense retrieval to the collection's own embedding model ───────
+        # A collection's vectors were produced by one specific model. Embedding the
+        # query with a different one compares vectors of different dimensions —
+        # ChromaDB rejects it outright, or (same width, different space) it returns
+        # confident nonsense. So the user's embedding choice governs *indexing*, and
+        # here the collection wins. Saying so is part of the contract: silently
+        # ignoring what the user picked is what makes a settings panel untrustworthy.
+        pinned_embedding_model = self._collection_embedding_model(collection_name, source)
+        # Read from the runtime, not from cfg: the runtime is what the stages
+        # actually consult, so comparing against it is the only way the notice
+        # cannot describe a model that was never in play.
+        requested_embedding_model = current_runtime().embedding_model
+        if pinned_embedding_model:
+            pin_embedding_model(pinned_embedding_model)
+            if requested_embedding_model and requested_embedding_model != pinned_embedding_model:
+                message = (
+                    f"Searched with '{pinned_embedding_model}' instead of the selected "
+                    f"'{requested_embedding_model}': that is the model this corpus is "
+                    f"indexed with. Re-index your documents to switch."
+                )
+                logger.info(f"[Pipeline] {message}")
+                notices.append(message)
+                self._safe_emit(emitter, "embedding_model_pinned", message)
 
         # ── 2. Dense and sparse retrieval, independently ──────────────────────────
         # One dead embedding endpoint or one corrupt BM25 index must not silence the
@@ -373,7 +572,7 @@ class AppRAGPipeline():
             )
             self._safe_emit(emitter, "retrieval_empty", "No relevant context found for this query")
             self._emit_degradations(emitter, degraded)
-            return self._no_context_result(source, degraded)
+            return self._no_context_result(source, degraded, notices)
 
         # ── 4. Merge + rerank ─────────────────────────────────────────────────────
         try:
@@ -427,7 +626,7 @@ class AppRAGPipeline():
                 logger.warning("[Pipeline] No usable chunks after reranking and the merge fallback")
                 self._safe_emit(emitter, "retrieval_empty", "No relevant context found for this query")
                 self._emit_degradations(emitter, degraded)
-                return self._no_context_result(source, degraded)
+                return self._no_context_result(source, degraded, notices)
 
         context = [
             {
@@ -461,22 +660,31 @@ class AppRAGPipeline():
                 "context": context,
                 "evaluation": evaluation,
                 "degraded": degraded,
+                "notices": notices,
             }
 
         # ── 6. Evaluation — optional scores, never worth the answer ───────────────
-        self._safe_emit(emitter, "evaluation_start", "Starting evaluation of generated answer and retrieved chunks")
-        try:
-            answer_relevancy, faithfulness = self.evaluate(query, chunks, answer)
-            evaluation = {
-                "answer_relevancy": answer_relevancy,
-                "faithfulness": faithfulness,
-            }
-            logger.info(f"[Pipeline] Evaluation results - Answer Relevancy: {answer_relevancy}, Faithfulness: {faithfulness}")
-        except Exception as e:
-            # evaluate() guards itself and returns (None, None); this catches the case
-            # where that guard is bypassed (stubbed judge, unpackable return value).
-            logger.error(f"[Pipeline] Evaluation failed — returning the answer without scores: {e}", exc_info=True)
-            degraded.append("evaluation")
+        # Switched off, this is not a degradation: two LLM-judge passes and an
+        # embedding call are a real cost, and the user gave them up on purpose.
+        if not cfg["use_evaluation"]:
+            logger.info("[Pipeline] Answer scoring disabled by config")
+            self._safe_emit(
+                emitter, "evaluation_skipped", "Answer scoring is switched off"
+            )
+        else:
+            self._safe_emit(emitter, "evaluation_start", "Starting evaluation of generated answer and retrieved chunks")
+            try:
+                answer_relevancy, faithfulness = self.evaluate(query, chunks, answer)
+                evaluation = {
+                    "answer_relevancy": answer_relevancy,
+                    "faithfulness": faithfulness,
+                }
+                logger.info(f"[Pipeline] Evaluation results - Answer Relevancy: {answer_relevancy}, Faithfulness: {faithfulness}")
+            except Exception as e:
+                # evaluate() guards itself and returns (None, None); this catches the case
+                # where that guard is bypassed (stubbed judge, unpackable return value).
+                logger.error(f"[Pipeline] Evaluation failed — returning the answer without scores: {e}", exc_info=True)
+                degraded.append("evaluation")
 
         self._emit_degradations(emitter, degraded)
 
@@ -486,9 +694,10 @@ class AppRAGPipeline():
             "context": context,
             "evaluation": evaluation,
             "degraded": degraded,
+            "notices": notices,
         }
 
-    def _no_context_result(self, source: str, degraded: list) -> dict:
+    def _no_context_result(self, source: str, degraded: list, notices: list = None) -> dict:
         """
         The honest "nothing was retrieved" payload. Shared by the pre- and
         post-rerank empty paths so both stay worded the same, and deliberately not
@@ -503,6 +712,7 @@ class AppRAGPipeline():
                 "faithfulness": None,
             },
             "degraded": list(degraded),
+            "notices": list(notices or []),
         }
 
     def _dataset_collection_name(self) -> str:
@@ -516,6 +726,57 @@ class AppRAGPipeline():
         except Exception:
             name = None
         return name if isinstance(name, str) and name else "dataset_collection"
+
+    def _configured_embedding_model(self) -> str:
+        """The embedding model this deployment indexes with by default.
+
+        Also the answer for a corpus that predates per-collection recording: the
+        base dataset and every user collection were built by this same
+        ``dense_config`` value, so it is the historically correct fallback.
+        """
+        try:
+            dense_config = self.config.get("dense_config") or {}
+            return str(dense_config.get("embedding_model") or "")
+        except Exception:
+            return ""
+
+    def _collection_embedding_model(self, collection_name: str, source: str) -> str:
+        """The embedding model whose vectors are actually in ``collection_name``.
+
+        Returns "" when it cannot be determined, which means "do not pin" — the
+        user's choice (or the configured default) then applies. Fully guarded: it
+        runs on the hot path of every query and a bookkeeping lookup must never be
+        the reason a question goes unanswered.
+        """
+        if not collection_name:
+            return ""
+
+        try:
+            if source == "user_collection":
+                record = UserCollection.objects.filter(
+                    collection_name=collection_name
+                ).first()
+                # An empty collection is not pinned to anything yet — the first
+                # document indexed into it decides.
+                if record and record.chunk_count > 0 and record.embedding_model:
+                    return str(record.embedding_model)
+                return ""
+
+            record = ChromaCollection.objects.filter(
+                collection_name=collection_name
+            ).first()
+            if record and record.embedding_model:
+                return str(record.embedding_model)
+
+            # No bookkeeping row: the shared corpus was indexed by this same
+            # deployment's dense_config, so that is what is in it.
+            return self._configured_embedding_model()
+        except Exception as e:
+            logger.warning(
+                f"[Pipeline] Could not determine the embedding model for "
+                f"'{collection_name}': {e}"
+            )
+            return ""
 
     def _pipeline_top_k(self) -> int:
         """
@@ -603,7 +864,12 @@ class AppRAGPipeline():
             f"Question: {query}\n"
             f"Answer:"
         )
-        return self.llm_client._call_api(prompt)
+        # Only the answer honours the request's temperature. The hop-bridging and
+        # keyword calls keep their own, because sampling those changes which
+        # documents are retrieved rather than how the answer reads.
+        return self.llm_client._call_api(
+            prompt, temperature=resolve_param("temperature", None)
+        )
             
         
     def run(
@@ -612,13 +878,18 @@ class AppRAGPipeline():
         query: str,
         conversation_id: int = None,
         config: Dict[str, Any] = None,
+        keys: Dict[str, str] = None,
     ) -> Dict[str, Any]:
         """
         Main entry point for running the RAG pipeline.
 
         `config` is the caller's per-query stage selection (which stages to run,
-        how many hops, which corpus). Omitting it runs the full default pipeline,
-        so callers that predate the feature are unaffected.
+        how many hops, which corpus, which models). Omitting it runs the full
+        default pipeline, so callers that predate the feature are unaffected.
+
+        `keys` are the caller's own API keys, if they brought any. They apply to
+        this query only and are never persisted; without them the server's
+        environment is used. See common.runtime.api_keys.
 
         `conversation_id` is optional: without one there is no Redis channel to
         publish stage updates to, so the query simply runs without streaming.
@@ -627,11 +898,30 @@ class AppRAGPipeline():
         """
         logger.info(f"Running RAG pipeline for user: {username} with query: {query}")
 
-        return self._run_core(query, username, conversation_id, config)
+        return self._run_core(query, username, conversation_id, config, keys)
     
+    def _requested_metrics(self) -> list:
+        """Which RAGAS metrics this request asked for.
+
+        Each is a separate judge pass, so an unwanted one is worth not running.
+        """
+        return [
+            name
+            for name, flag in (
+                ("answer_relevancy", "eval_answer_relevancy"),
+                ("faithfulness", "eval_faithfulness"),
+            )
+            if resolve_param(flag, True)
+        ]
+
     def evaluate(self, query: str, retrieved_chunks: list, generated_response: str) -> dict:
         """
         Evaluates the generated answer and retrieved chunks against the ground truth.
+
+        The judge models default to whatever the deployment configured rather
+        than to the model answering the question: a judge that is the same model
+        as the one being judged is scoring its own output. A request can still
+        override them explicitly.
         """
         try:
             converted_dataset = convert_data_response_and_dataset_to_dataset(
@@ -639,10 +929,17 @@ class AppRAGPipeline():
                 retrieved_chunks=retrieved_chunks,
                 generated_response=generated_response
             )
+            judge_llm = resolve_param(
+                "evaluation_llm_model", self.config["evaluation_llm_model"]
+            )
+            judge_embeddings = resolve_param(
+                "evaluation_embedding_model", self.config["evaluation_embedding_model"]
+            )
             evaluation_result = ragas_llm_as_a_judge_generation_evaluation(
                 dataset=converted_dataset,
-                llm_judge=llm_langchain_wrapper(self.config["evaluation_llm_model"]),
-                judge_embeddings=embeddings_langchain_wrapper(self.config["evaluation_embedding_model"])
+                llm_judge=llm_langchain_wrapper(judge_llm),
+                judge_embeddings=embeddings_langchain_wrapper(judge_embeddings),
+                metrics=self._requested_metrics(),
             )
             answer_relevancy = evaluation_result["answer_relevancy"].iloc[0] if not evaluation_result.empty else None
             faithfulness = evaluation_result["faithfulness"].iloc[0] if not evaluation_result.empty else None

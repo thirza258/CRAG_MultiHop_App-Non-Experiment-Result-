@@ -1,9 +1,15 @@
-import os
 import numpy as np
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from sklearn.metrics.pairwise import cosine_similarity
+from ai_handler.openrouter import MissingAPIKeyError, openrouter_client
 from chroma.chroma_settings import get_chroma_client
+from common.runtime import api_keys as api_keys_module
+from common.runtime.context import (
+    request_secrets,
+    resolve_embedding_model,
+    resolve_param,
+)
 from emitter.status import NULL_EMITTER
 import logging
 from math import ceil
@@ -12,20 +18,13 @@ logger = logging.getLogger(__name__)
 
 class DenseRAG:
     def __init__(self, config: Dict[str, Any]):
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY not found in environment variables.")
-        
         self.config = config
+        # The *configured* embedding model. A request may pin a different one —
+        # always read it through active_embedding_model, never this attribute.
         self.embedding_model = config.get('embedding_model', 'openai/text-embedding-3-small')
-        
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key
-        )
-        
+
         self.llm_model = config.get('llm_model', "google/gemini-3-flash-preview")
-        self.top_k = config.get('top_k', 5)
+        self._configured_top_k = config.get('top_k', 5)
         self.documents: List[str] = []
 
         # The pipeline injects the real emitter later via set_emitter(); until it
@@ -33,6 +32,41 @@ class DenseRAG:
         self.emitter = NULL_EMITTER
 
         self.collection = get_chroma_client(collection_name=config.get('collection_name', 'default_corpus'))
+
+    @property
+    def client(self) -> OpenAI:
+        """OpenRouter client for whichever key applies to this request.
+
+        Resolved per call, not stored: the key can differ per request, and a
+        deployment where every user brings their own has none at construction
+        time. Raising here used to make the whole pipeline unconstructible.
+        """
+        return openrouter_client()
+
+    @property
+    def top_k(self) -> int:
+        """How many chunks to return for this request.
+
+        Resolved per call so every layer of the chain agrees: the wrappers read
+        this same value, and a stale copy captured at construction would make
+        multi-hop truncate to a different budget than the retriever returned.
+        """
+        return int(resolve_param("top_k", getattr(self, "_configured_top_k", 5)))
+
+    @top_k.setter
+    def top_k(self, value) -> None:
+        # Assignment sets the *configured* default; a request still overrides it.
+        self._configured_top_k = value
+
+    @property
+    def active_embedding_model(self) -> str:
+        """The embedding model for this request.
+
+        The pipeline pins this to whatever the target collection was indexed
+        with, because a query embedded by a different model produces a vector of
+        the wrong dimension for that collection.
+        """
+        return resolve_embedding_model(self.embedding_model)
 
     def _get_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
         try:
@@ -65,15 +99,25 @@ class DenseRAG:
             batch_size = len(cleaned_texts)
 
         all_embeddings = []
-        logger.info(f"[DENSE] Fetching embeddings for {len(cleaned_texts)} texts using model {self.embedding_model}...")
+        embedding_model = self.active_embedding_model
+
+        try:
+            client = self.client
+        except MissingAPIKeyError as e:
+            # No key at all: callers already treat an empty embedding list as
+            # "retrieval found nothing", which the pipeline reports honestly.
+            logger.error(f"[DENSE] Cannot embed — {e}")
+            return []
+
+        logger.info(f"[DENSE] Fetching embeddings for {len(cleaned_texts)} texts using model {embedding_model}...")
 
         for i in range(0, len(cleaned_texts), batch_size):
             batch = cleaned_texts[i : i + batch_size]
             try:
                 
-                response = self.client.embeddings.create(
+                response = client.embeddings.create(
                     input=batch,
-                    model=self.embedding_model,
+                    model=embedding_model,
                     encoding_format="float"
                 )
                     
@@ -86,7 +130,10 @@ class DenseRAG:
                 logger.info(f"[DENSE] Embedded batch {i // batch_size + 1} / {ceil(len(cleaned_texts) / batch_size)}")
 
             except Exception as e:
-                logger.error(f"[DENSE] Error fetching embeddings for batch {i // batch_size}: {e}")
+                logger.error(
+                    f"[DENSE] Error fetching embeddings for batch {i // batch_size}: "
+                    f"{api_keys_module.scrub(str(e), request_secrets())}"
+                )
                 continue
 
         if len(all_embeddings) != len(cleaned_texts):
@@ -120,7 +167,7 @@ class DenseRAG:
                 logger.warning(f"[RETRIEVE] Collection '{collection_name}' is empty. Returning empty result.")
                 return [], []
 
-            logger.info(f"[RETRIEVE] Embedding query using model '{self.embedding_model}'...")
+            logger.info(f"[RETRIEVE] Embedding query using model '{self.active_embedding_model}'...")
             query_embeddings = self._get_embeddings([query])
             if not query_embeddings:
                 logger.warning(f"[RETRIEVE] Embedding returned empty for query: '{str(query)[:80]}'")

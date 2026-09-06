@@ -31,8 +31,8 @@ export const FileUploadSection: React.FC<FileUploadProps> = ({
         ref={inputRef}
         onChange={onChange}
         disabled={disabled}
-        className={`flex-1 border rounded p-2 ${
-          disabled ? "bg-gray-100 cursor-not-allowed opacity-50" : ""
+        className={`flex-1 rounded border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-2 text-sm ${
+          disabled ? "cursor-not-allowed bg-[hsl(var(--muted))] opacity-50" : ""
         }`}
       />
 
@@ -40,7 +40,7 @@ export const FileUploadSection: React.FC<FileUploadProps> = ({
         <button
           type="button"
           onClick={onClear}
-          className="text-sm text-red-500 hover:underline"
+          className="text-sm text-[hsl(var(--primary))] hover:underline"
         >
           Remove
         </button>
@@ -48,7 +48,7 @@ export const FileUploadSection: React.FC<FileUploadProps> = ({
     </div>
 
     {fileName && (
-      <p className="mt-1 text-sm text-slate-400 truncate">
+      <p className="mt-1 truncate text-sm text-[hsl(var(--muted-foreground))]">
         Selected: {fileName}
       </p>
     )}

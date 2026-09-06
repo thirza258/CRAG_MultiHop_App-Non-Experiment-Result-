@@ -33,9 +33,9 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import Dict
+from typing import Any, Dict
 
-from common import api_keys as api_keys_module
+from common.runtime import api_keys as api_keys_module
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,12 @@ class RuntimeSettings:
     llm_model: str = ""
     embedding_model: str = ""
     keys: Dict[str, str] = field(default_factory=dict)
+    #: The rest of the normalised pipeline config — stage toggles, retrieval
+    #: sizing, thresholds, chunking. Carried whole rather than as named fields
+    #: so adding a knob means touching the normaliser and the one component
+    #: that reads it, not this class as well. Empty means "no request context",
+    #: which every component reads as "use my own configured default".
+    params: Dict[str, Any] = field(default_factory=dict)
 
     def with_embedding_model(self, model: str) -> "RuntimeSettings":
         """A copy pinned to ``model`` — used when the collection's embedding
@@ -92,17 +98,39 @@ class RuntimeSettings:
             "llm_model": self.llm_model,
             "embedding_model": self.embedding_model,
             "keys": dict(self.keys or {}),
+            "params": dict(self.params or {}),
         }
+
+    @classmethod
+    def from_wire(cls, config, keys) -> "RuntimeSettings":
+        """Build from a normalised pipeline config plus a normalised KEYS dict.
+
+        Takes the two already-validated wire objects rather than the raw payload
+        so there is exactly one place that decides what a valid model id is
+        (:func:`normalize_model_id`, via ``common.runtime.config``).
+        """
+        config = config if isinstance(config, dict) else {}
+        return cls(
+            llm_model=normalize_model_id(config.get("llm_model"), ""),
+            embedding_model=normalize_model_id(config.get("embedding_model"), ""),
+            keys=api_keys_module.normalize_api_keys(keys),
+            params=dict(config),
+        )
 
     @classmethod
     def from_dict(cls, raw) -> "RuntimeSettings":
         """Rebuild from :meth:`to_dict`, re-validating everything."""
         if not isinstance(raw, dict):
             return cls()
+        params = raw.get("params")
         return cls(
             llm_model=normalize_model_id(raw.get("llm_model"), ""),
             embedding_model=normalize_model_id(raw.get("embedding_model"), ""),
             keys=api_keys_module.normalize_api_keys(raw.get("keys")),
+            # Re-validated by the caller that knows the config schema
+            # (common.runtime.handoff), which cannot be imported here without a
+            # cycle. Anything not a dict is dropped.
+            params=dict(params) if isinstance(params, dict) else {},
         )
 
     def describe(self) -> str:
@@ -152,6 +180,28 @@ def use_runtime(settings: RuntimeSettings):
             _RUNTIME.set(EMPTY_RUNTIME)
 
 
+def pin_embedding_model(model: str) -> RuntimeSettings:
+    """Replace the embedding model for the rest of the current runtime block.
+
+    Called by the pipeline once it knows which collection the query will search:
+    that collection's vectors came from one specific model, so the query has to
+    be embedded by the same one whatever the user picked. Safe to call inside a
+    :func:`use_runtime` block — that block's ``finally`` restores the value from
+    before it was entered regardless of any ``set`` in between.
+
+    A falsy ``model`` is a no-op: "we could not determine the collection's model"
+    must not be mistaken for "use no model".
+    """
+    settings = current_runtime()
+    normalized = normalize_model_id(model, "")
+    if not normalized or normalized == settings.embedding_model:
+        return settings
+
+    pinned = settings.with_embedding_model(normalized)
+    _RUNTIME.set(pinned)
+    return pinned
+
+
 # ── Resolution helpers used by the components ────────────────────────────────
 # Each takes the component's own configured default, so "the user did not choose"
 # keeps the exact behaviour that component had before this feature existed.
@@ -170,6 +220,30 @@ def resolve_embedding_model(default: str) -> str:
     with a value.
     """
     return current_runtime().embedding_model or default
+
+
+def resolve_param(name: str, default=None):
+    """One pipeline-config value for this request, else the caller's default.
+
+    ``default`` is the component's own configured value, so a request that did
+    not express a preference behaves exactly as it did before this knob
+    existed. Two things count as "no preference" and fall through to it:
+
+    * no runtime installed at all (a management command, a script, a direct
+      construction), and
+    * the sentinels the config uses for "defer to the server" — ``None`` for a
+      number, ``""`` for a model id or named strategy.
+
+    ``False`` and ``0`` are real answers and are returned as-is.
+    """
+    params = current_runtime().params
+    if not params or name not in params:
+        return default
+
+    value = params[name]
+    if value is None or value == "":
+        return default
+    return value
 
 
 def resolve_key(name: str) -> str:

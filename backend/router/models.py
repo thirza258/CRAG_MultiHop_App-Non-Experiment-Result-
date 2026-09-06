@@ -55,7 +55,11 @@ class ChromaCollection(models.Model):
     ]
     collection_name = models.CharField(max_length=255, unique=True)
     collection_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="corpus")
-    embedding_model = models.CharField(max_length=100, default="text-embedding-3-small")
+    # The model that actually produced this collection's vectors. Blank means
+    # "not recorded" — query-time dense retrieval pins itself to this value, so
+    # a wrong one is worse than none, and the old default asserted a specific
+    # model on every new row without anything ever writing the real one.
+    embedding_model = models.CharField(max_length=100, blank=True, default="")
     chunk_count = models.IntegerField(default=0)
     fingerprint = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -72,7 +76,10 @@ class UserCollection(models.Model):
     """
     user = models.OneToOneField(GuestUser, on_delete=models.CASCADE, related_name="collection")
     collection_name = models.CharField(max_length=255, unique=True)
-    embedding_model = models.CharField(max_length=100, default="text-embedding-3-small")
+    # Set by AppRAGPipeline._build_index to the model that embedded the chunks,
+    # and cleared when the last document is deleted. Blank means the collection
+    # is not pinned to a vector space yet, so the user's choice still applies.
+    embedding_model = models.CharField(max_length=100, blank=True, default="")
     chunk_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

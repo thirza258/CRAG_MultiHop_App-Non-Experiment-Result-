@@ -11,15 +11,24 @@ import unittest
 from unittest import mock
 
 try:
+    from common.runtime import context as runtime_context
     from corrective import corrective_rag
     from corrective.corrective_rag import CorrectiveRAG
+    from corrective.external_search import ExternalSearcher
     from emitter.status import NULL_EMITTER
     IMPORT_ERROR = ""
 except Exception as exc:  # corrective_evaluator needs torch/transformers + NLTK data + Django
     corrective_rag = None
     CorrectiveRAG = None
+    ExternalSearcher = None
     NULL_EMITTER = None
+    runtime_context = None
     IMPORT_ERROR = str(exc)
+
+
+def _with_params(**params):
+    """Install a request runtime carrying just these pipeline-config values."""
+    return runtime_context.use_runtime(runtime_context.RuntimeSettings(params=params))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -778,3 +787,191 @@ class RetrieveDelegationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# per-request switches
+# ──────────────────────────────────────────────────────────────────────
+
+@unittest.skipIf(CorrectiveRAG is None, f"corrective_rag unavailable: {IMPORT_ERROR}")
+class ExternalSearchToggleTests(unittest.TestCase):
+    """Each external source, and the escalation as a whole, is switchable.
+
+    Returning nothing is already a supported outcome — the callers fall back to
+    the local chunks — so switching these off narrows the answer to the indexed
+    corpus rather than breaking anything.
+    """
+
+    def _crag(self):
+        external = _external(wiki=(["W1"], [{"url": "w1"}]), news=(["N1"], [{"url": "n1"}]))
+        return _make_crag(external=external), external
+
+    def test_both_sources_run_by_default(self):
+        crag, external = self._crag()
+
+        docs, metas = crag._safe_external_search("q")
+
+        external.search_wikipedia.assert_called_once_with("q")
+        external.search_news.assert_called_once_with("q")
+        self.assertEqual(docs, ["W1", "N1"])
+        self.assertEqual(metas, [{"url": "w1"}, {"url": "n1"}])
+
+    def test_switching_external_search_off_calls_neither_source(self):
+        crag, external = self._crag()
+
+        with _with_params(use_external_search=False):
+            self.assertEqual(crag._safe_external_search("q"), ([], []))
+
+        external.search_wikipedia.assert_not_called()
+        external.search_news.assert_not_called()
+
+    def test_switching_external_search_off_says_so_on_the_status_channel(self):
+        crag, _ = self._crag()
+        emitter = _RecordingEmitter()
+        crag.set_emitter(emitter)
+
+        with _with_params(use_external_search=False):
+            crag._safe_external_search("q")
+
+        self.assertTrue(
+            any("switched off" in message for message in emitter.messages()),
+            emitter.messages(),
+        )
+
+    def test_wikipedia_can_be_switched_off_on_its_own(self):
+        crag, external = self._crag()
+
+        with _with_params(use_wikipedia=False):
+            docs, metas = crag._safe_external_search("q")
+
+        external.search_wikipedia.assert_not_called()
+        external.search_news.assert_called_once_with("q")
+        self.assertEqual(docs, ["N1"])
+        self.assertEqual(metas, [{"url": "n1"}])
+
+    def test_news_can_be_switched_off_on_its_own(self):
+        crag, external = self._crag()
+
+        with _with_params(use_news=False):
+            docs, metas = crag._safe_external_search("q")
+
+        external.search_news.assert_not_called()
+        external.search_wikipedia.assert_called_once_with("q")
+        self.assertEqual(docs, ["W1"])
+
+    def test_switching_both_sources_off_matches_switching_the_escalation_off(self):
+        crag, external = self._crag()
+
+        with _with_params(use_wikipedia=False, use_news=False):
+            self.assertEqual(crag._safe_external_search("q"), ([], []))
+
+        external.search_wikipedia.assert_not_called()
+        external.search_news.assert_not_called()
+
+
+@unittest.skipIf(CorrectiveRAG is None, f"corrective_rag unavailable: {IMPORT_ERROR}")
+class QueryExpansionToggleTests(unittest.TestCase):
+    """Query rewriting is three LLM calls, and the ambiguous-resolution retries
+    are built on them — switching it off removes both."""
+
+    def test_expansion_runs_by_default(self):
+        expander = _expander(keyword="kw", reformulated="reformulated", alternatives=["a", "b"])
+        crag = _make_crag(expander=expander)
+
+        self.assertEqual(crag._safe_keyword("q"), "kw")
+        self.assertEqual(crag._safe_reformulate("q"), "reformulated")
+        self.assertEqual(crag._safe_expand_multiple("q"), ["a", "b"])
+
+    def test_switched_off_the_raw_query_is_used_as_its_own_keyword(self):
+        expander = _expander()
+        crag = _make_crag(expander=expander)
+
+        with _with_params(use_query_expansion=False):
+            self.assertEqual(crag._safe_keyword("who wrote it?"), "who wrote it?")
+            self.assertEqual(crag._safe_reformulate("who wrote it?"), "who wrote it?")
+
+        expander.to_keyword.assert_not_called()
+        expander.reformulate.assert_not_called()
+
+    def test_switched_off_there_are_no_alternative_queries_to_retry_with(self):
+        expander = _expander(alternatives=["a", "b", "c"])
+        crag = _make_crag(expander=expander)
+
+        with _with_params(use_query_expansion=False):
+            self.assertEqual(crag._safe_expand_multiple("q"), [])
+
+        expander.expand_multiple.assert_not_called()
+
+    def test_the_number_of_alternatives_is_configurable(self):
+        expander = _expander(alternatives=["a"])
+        crag = _make_crag(expander=expander)
+
+        with _with_params(expansion_queries=5):
+            crag._safe_expand_multiple("q")
+
+        expander.expand_multiple.assert_called_once_with("q", n=5)
+
+    def test_the_default_alternative_count_is_unchanged(self):
+        expander = _expander(alternatives=["a"])
+        crag = _make_crag(expander=expander)
+
+        crag._safe_expand_multiple("q")
+
+        expander.expand_multiple.assert_called_once_with("q", n=3)
+
+
+@unittest.skipIf(CorrectiveRAG is None, f"corrective_rag unavailable: {IMPORT_ERROR}")
+class TopKDelegationTests(unittest.TestCase):
+    """top_k has to be read live off the wrapped retriever.
+
+    MultiHopRetriever truncates to whatever this reports, so a copy taken at
+    construction would leave the layers working to different budgets — the outer
+    one discarding chunks the inner one was asked to return.
+    """
+
+    def test_it_follows_the_retriever_rather_than_a_construction_time_copy(self):
+        retriever = _RecordingRetriever()
+        crag = _make_crag(retriever=retriever)
+        self.assertEqual(crag.top_k, 4)
+
+        retriever.top_k = 9
+        self.assertEqual(crag.top_k, 9)
+
+
+@unittest.skipIf(ExternalSearcher is None, f"external_search unavailable: {IMPORT_ERROR}")
+class ExternalTopKTests(unittest.TestCase):
+    """How many web passages a request keeps.
+
+    Constructed bare: a real ExternalSearcher builds a QueryExpander and an LLM
+    client, and none of that is what this is about. One searcher serves every
+    concurrent query, so this has to resolve per call rather than be held.
+    """
+
+    def _searcher(self, configured=5):
+        searcher = object.__new__(ExternalSearcher)
+        searcher._configured_top_k = configured
+        return searcher
+
+    def test_the_request_value_wins(self):
+        with _with_params(external_top_k=8):
+            self.assertEqual(self._searcher().top_k, 8)
+
+    def test_an_unset_value_leaves_the_configured_one(self):
+        with _with_params():
+            self.assertEqual(self._searcher(configured=3).top_k, 3)
+
+    def test_it_does_not_outlive_the_request(self):
+        searcher = self._searcher(configured=3)
+
+        with _with_params(external_top_k=8):
+            pass
+
+        self.assertEqual(searcher.top_k, 3)
+
+    def test_a_searcher_built_before_the_field_existed_still_answers(self):
+        # An instance from an older pickle/partial construction has no
+        # _configured_top_k; the property must not raise on it.
+        searcher = object.__new__(ExternalSearcher)
+
+        with _with_params():
+            self.assertEqual(searcher.top_k, 5)

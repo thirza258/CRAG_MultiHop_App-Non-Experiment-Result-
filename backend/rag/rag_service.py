@@ -30,7 +30,6 @@ class RAGRegistry:
             "lower_threshold": 0.87,
             "strip_threshold": 0.88,
             "top_k": 4,
-            "reranker_sigmoid": True,
             "external_chunk_size": 1000,
             "external_chunk_overlap": 200,
         }

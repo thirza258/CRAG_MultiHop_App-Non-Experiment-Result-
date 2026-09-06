@@ -117,6 +117,44 @@ def ensure_corpus_exists() -> pd.DataFrame:
     raise RuntimeError(f"Could not download corpus after {CORPUS_DOWNLOAD_ATTEMPTS} attempts: {last_error}")
 
 
+#: The model the base corpus is embedded with. The app pins query-time dense
+#: retrieval to whatever a collection was indexed with, so changing this means
+#: re-indexing the corpus from scratch — a query embedded by a different model
+#: is a comparison across vector spaces.
+BASE_EMBEDDING_MODEL = "google/gemini-embedding-2-preview"
+
+
+def _record_collection(embedding_model: str, chunk_count: int) -> None:
+    """Write the bookkeeping row for the corpus we just built.
+
+    Without this the pipeline has to guess which model produced the vectors it
+    is searching, and guessing is how a query ends up embedded into the wrong
+    vector space. Best-effort: the corpus itself is already indexed by the time
+    this runs, so a bookkeeping failure must not undo that.
+    """
+    try:
+        from router.models import ChromaCollection
+
+        record, created = ChromaCollection.objects.update_or_create(
+            collection_name=CHROMA_COLLECTION_NAME,
+            defaults={
+                "collection_type": "corpus",
+                "embedding_model": embedding_model,
+                "chunk_count": chunk_count,
+            },
+        )
+        print(
+            f"{'Registered' if created else 'Updated'} collection record for "
+            f"'{CHROMA_COLLECTION_NAME}' (embedding_model={embedding_model})"
+        )
+    except Exception as exc:
+        print(
+            f"WARNING: could not record the collection's embedding model "
+            f"({exc}). Dense retrieval will fall back to the pipeline's "
+            f"configured default."
+        )
+
+
 def index_corpus(collection, df: pd.DataFrame) -> None:
     """Embed the corpus via OpenRouter and insert it into ChromaDB."""
     from chroma.chroma_settings import insert_chunk_to_chromadb
@@ -124,7 +162,7 @@ def index_corpus(collection, df: pd.DataFrame) -> None:
     from dense_rag.dense_rag import DenseRAG
 
     config = {
-        "embedding_model": "google/gemini-embedding-2-preview",
+        "embedding_model": BASE_EMBEDDING_MODEL,
         "llm_model": "google/gemini-3-flash-preview",
         "top_k": 5,
         "collection_name": CHROMA_COLLECTION_NAME,
@@ -155,6 +193,8 @@ def index_corpus(collection, df: pd.DataFrame) -> None:
 
     if not success:
         raise RuntimeError("Some batches failed to insert. Re-run to retry.")
+
+    _record_collection(BASE_EMBEDDING_MODEL, len(all_documents))
 
     print("Base dataset indexing completed successfully.")
 

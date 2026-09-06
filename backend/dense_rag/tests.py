@@ -3,8 +3,15 @@ retrieval fallbacks that keep AppRAGPipeline alive when ChromaDB or the
 embedding API is unreachable.
 
 Everything here runs with no network, no API key and no ChromaDB server:
-DenseRAG.__init__ is only ever entered with dense_rag.dense_rag.OpenAI and
-dense_rag.dense_rag.get_chroma_client patched, plus a fake OPENROUTER_API_KEY.
+DenseRAG.__init__ is only ever entered with dense_rag.dense_rag.get_chroma_client
+patched, and the OpenRouter client is stubbed by patching the shared
+``openrouter_client`` factory the property resolves through.
+
+Note the construction contract: DenseRAG deliberately does **not** need an API
+key to be built. Users can bring their own per request, so the key is resolved at
+call time — a deployment with none configured has to be able to construct the
+pipeline at all, and a missing key has to surface in the stage that needed it
+rather than at import.
 """
 
 import os
@@ -20,8 +27,6 @@ except Exception as exc:  # needs Django configured (chroma -> router.models) + 
     DenseRAG = None
     IMPORT_ERROR = str(exc)
 
-
-API_KEY_ENV = {"OPENROUTER_API_KEY": "test-key"}
 
 # Sentinel so tests can deliberately hand back a None payload, which is one of
 # the malformed shapes retrieve() has to survive.
@@ -43,17 +48,31 @@ def _collection(count=0, query_result=_UNSET, get_result=_UNSET, name="test_coll
 
 
 def _make_dense_rag(config=None, collection=None):
-    """Construct DenseRAG with the OpenAI client and Chroma lookup stubbed out."""
+    """Construct DenseRAG with only the Chroma lookup stubbed out."""
     full_config = {"collection_name": "test_collection", "top_k": 5}
     full_config.update(config or {})
     stub_collection = collection if collection is not None else _collection()
 
-    with mock.patch.dict(os.environ, API_KEY_ENV), mock.patch.object(
-        dense_rag_module, "OpenAI"
-    ), mock.patch.object(
+    with mock.patch.object(
         dense_rag_module, "get_chroma_client", return_value=stub_collection
     ):
         return DenseRAG(full_config)
+
+
+def _stub_client(rag):
+    """Patch the OpenRouter client factory and return the stub it hands back.
+
+    ``DenseRAG.client`` is a read-only property that resolves per call, so the
+    injection point is the factory rather than the attribute. That is deliberate:
+    an assignable client on a process-wide singleton is exactly the shared
+    mutable state that would let one user's credentials serve another's query.
+    """
+    client = mock.Mock()
+    patcher = mock.patch.object(
+        dense_rag_module, "openrouter_client", return_value=client
+    )
+    patcher.start()
+    return client, patcher
 
 
 def _embedding_response(vectors):
@@ -65,35 +84,45 @@ def _embedding_response(vectors):
 
 @unittest.skipIf(DenseRAG is None, f"dense_rag unavailable: {IMPORT_ERROR}")
 class InitTests(unittest.TestCase):
-    def test_init_rejects_an_empty_api_key(self):
-        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}), mock.patch.object(
-            dense_rag_module, "OpenAI"
-        ) as openai_cls, mock.patch.object(
-            dense_rag_module, "get_chroma_client"
-        ) as get_client:
-            with self.assertRaises(ValueError) as ctx:
-                DenseRAG({})
-
-        self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))
-        # The guard must fire before any client/collection is built.
-        openai_cls.assert_not_called()
-        get_client.assert_not_called()
-
-    def test_init_rejects_an_absent_api_key(self):
+    def test_init_succeeds_without_any_api_key(self):
+        # Users can bring their own key per request, so a deployment that has
+        # none configured must still be able to build the pipeline. This used
+        # to raise ValueError and take the whole app down at startup.
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
-            dense_rag_module, "OpenAI"
-        ), mock.patch.object(dense_rag_module, "get_chroma_client"):
-            with self.assertRaises(ValueError) as ctx:
-                DenseRAG({})
+            dense_rag_module, "get_chroma_client", return_value=_collection()
+        ):
+            rag = DenseRAG({})
 
-        self.assertIn("OPENROUTER_API_KEY", str(ctx.exception))
+        self.assertEqual(rag.embedding_model, "openai/text-embedding-3-small")
 
-    def test_init_builds_openrouter_client_and_resolves_the_collection(self):
+    def test_init_does_not_build_a_client(self):
+        # The key can differ per request, so binding one at construction time
+        # would freeze whichever key happened to be set at startup.
+        with mock.patch.object(
+            dense_rag_module, "openrouter_client"
+        ) as factory, mock.patch.object(
+            dense_rag_module, "get_chroma_client", return_value=_collection()
+        ):
+            DenseRAG({})
+
+        factory.assert_not_called()
+
+    def test_a_missing_key_surfaces_at_call_time_not_construction(self):
+        # And as an empty embedding list rather than an exception: the pipeline
+        # reads that as "retrieval found nothing", which it reports honestly.
+        rag = _make_dense_rag()
+
+        with mock.patch.object(
+            dense_rag_module,
+            "openrouter_client",
+            side_effect=dense_rag_module.MissingAPIKeyError("no key"),
+        ):
+            self.assertEqual(rag._get_embeddings(["hello"]), [])
+
+    def test_init_resolves_the_collection_and_reads_its_config(self):
         stub_collection = _collection(name="my_corpus")
 
-        with mock.patch.dict(os.environ, API_KEY_ENV), mock.patch.object(
-            dense_rag_module, "OpenAI"
-        ) as openai_cls, mock.patch.object(
+        with mock.patch.object(
             dense_rag_module, "get_chroma_client", return_value=stub_collection
         ) as get_client:
             rag = DenseRAG(
@@ -104,20 +133,14 @@ class InitTests(unittest.TestCase):
                 }
             )
 
-        openai_cls.assert_called_once_with(
-            base_url="https://openrouter.ai/api/v1", api_key="test-key"
-        )
         get_client.assert_called_once_with(collection_name="my_corpus")
-        self.assertIs(rag.client, openai_cls.return_value)
         self.assertIs(rag.collection, stub_collection)
         self.assertEqual(rag.embedding_model, "openai/some-embedder")
         self.assertEqual(rag.top_k, 3)
         self.assertEqual(rag.documents, [])
 
     def test_init_falls_back_to_default_model_and_collection(self):
-        with mock.patch.dict(os.environ, API_KEY_ENV), mock.patch.object(
-            dense_rag_module, "OpenAI"
-        ), mock.patch.object(
+        with mock.patch.object(
             dense_rag_module, "get_chroma_client", return_value=_collection()
         ) as get_client:
             rag = DenseRAG({})
@@ -146,7 +169,8 @@ class InitTests(unittest.TestCase):
 class GetEmbeddingsTests(unittest.TestCase):
     def setUp(self):
         self.rag = _make_dense_rag({"embedding_model": "openai/some-embedder"})
-        self.rag.client = mock.Mock()
+        self.client, patcher = _stub_client(self.rag)
+        self.addCleanup(patcher.stop)
         self.batches = []
 
     def _record_batches(self, **kwargs):
@@ -155,27 +179,27 @@ class GetEmbeddingsTests(unittest.TestCase):
         return _embedding_response([[0.1, 0.2]] * len(batch))
 
     def test_batches_input_by_batch_size(self):
-        self.rag.client.embeddings.create.side_effect = self._record_batches
+        self.client.embeddings.create.side_effect = self._record_batches
 
         embeddings = self.rag._get_embeddings([f"doc {i}" for i in range(250)], batch_size=100)
 
-        self.assertEqual(self.rag.client.embeddings.create.call_count, 3)
+        self.assertEqual(self.client.embeddings.create.call_count, 3)
         self.assertEqual([len(batch) for batch in self.batches], [100, 100, 50])
         self.assertEqual(len(embeddings), 250)
 
     def test_sends_the_configured_model_and_float_encoding(self):
-        self.rag.client.embeddings.create.return_value = _embedding_response([[0.1]])
+        self.client.embeddings.create.return_value = _embedding_response([[0.1]])
 
         self.rag._get_embeddings(["only one"])
 
-        self.rag.client.embeddings.create.assert_called_once_with(
+        self.client.embeddings.create.assert_called_once_with(
             input=["only one"],
             model="openai/some-embedder",
             encoding_format="float",
         )
 
     def test_strips_newlines_from_inputs(self):
-        self.rag.client.embeddings.create.side_effect = self._record_batches
+        self.client.embeddings.create.side_effect = self._record_batches
 
         self.rag._get_embeddings(["first\nsecond\nthird"])
 
@@ -184,7 +208,7 @@ class GetEmbeddingsTests(unittest.TestCase):
     def test_coerces_non_text_inputs_positionally(self):
         # Callers align embeddings with their input by position, so a bad entry
         # must become a placeholder rather than shift everything after it.
-        self.rag.client.embeddings.create.side_effect = self._record_batches
+        self.client.embeddings.create.side_effect = self._record_batches
 
         embeddings = self.rag._get_embeddings(["real text", None, 42])
 
@@ -192,7 +216,7 @@ class GetEmbeddingsTests(unittest.TestCase):
         self.assertEqual(len(embeddings), 3)
 
     def test_skips_a_batch_whose_api_call_raises_and_keeps_the_rest(self):
-        self.rag.client.embeddings.create.side_effect = [
+        self.client.embeddings.create.side_effect = [
             _embedding_response([[0.1]]),
             ConnectionError("openrouter down"),
             _embedding_response([[0.3]]),
@@ -203,31 +227,31 @@ class GetEmbeddingsTests(unittest.TestCase):
         self.assertEqual(embeddings, [[0.1], [0.3]])
 
     def test_returns_empty_when_every_batch_fails(self):
-        self.rag.client.embeddings.create.side_effect = ConnectionError("no network")
+        self.client.embeddings.create.side_effect = ConnectionError("no network")
 
         self.assertEqual(self.rag._get_embeddings(["a", "b"], batch_size=1), [])
 
     def test_returns_empty_when_the_response_carries_no_data(self):
-        self.rag.client.embeddings.create.return_value = _embedding_response([])
+        self.client.embeddings.create.return_value = _embedding_response([])
 
         self.assertEqual(self.rag._get_embeddings(["a"]), [])
 
     def test_returns_empty_for_empty_input_without_calling_the_api(self):
         for texts in ([], None):
             with self.subTest(texts=texts):
-                self.rag.client.embeddings.create.reset_mock()
+                self.client.embeddings.create.reset_mock()
 
                 self.assertEqual(self.rag._get_embeddings(texts), [])
-                self.rag.client.embeddings.create.assert_not_called()
+                self.client.embeddings.create.assert_not_called()
 
     def test_non_positive_batch_size_falls_back_to_a_single_batch(self):
         # app_pipeline passes min(len(texts), 50), which is 0 for an empty-ish
         # corpus, and range() refuses a step of 0.
-        self.rag.client.embeddings.create.side_effect = self._record_batches
+        self.client.embeddings.create.side_effect = self._record_batches
 
         embeddings = self.rag._get_embeddings(["a", "b", "c"], batch_size=0)
 
-        self.assertEqual(self.rag.client.embeddings.create.call_count, 1)
+        self.assertEqual(self.client.embeddings.create.call_count, 1)
         self.assertEqual(self.batches, [["a", "b", "c"]])
         self.assertEqual(len(embeddings), 3)
 
@@ -425,8 +449,9 @@ class RetrieveTests(unittest.TestCase):
         # The logging path formats the query, so it must survive None.
         collection = _collection(count=3)
         rag = self._rag(collection)
-        rag.client = mock.Mock()
-        rag.client.embeddings.create.return_value = _embedding_response([])
+        client, patcher = _stub_client(rag)
+        self.addCleanup(patcher.stop)
+        client.embeddings.create.return_value = _embedding_response([])
 
         self.assertEqual(rag.retrieve(None), ([], []))
         collection.query.assert_not_called()

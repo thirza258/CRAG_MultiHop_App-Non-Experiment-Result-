@@ -1,4 +1,3 @@
-from langchain_openai import ChatOpenAI
 from common.prompt_builder import vote_prompt, rag_prompt, prompt_generator
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -6,6 +5,10 @@ import logging
 import os
 import time
 from openai import OpenAI
+
+from ai_handler.openrouter import MissingAPIKeyError, openrouter_client
+from common.runtime import api_keys as api_keys_module
+from common.runtime.context import request_secrets, resolve_llm_model
 
 logger = logging.getLogger(__name__)
 
@@ -25,22 +28,42 @@ def _chat_with_retry(client: OpenAI, provider: str, model: str, prompt: str, tem
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
             last_error = e
-            logger.warning(f"{provider} call failed (attempt {attempt}/{_MAX_ATTEMPTS}, model={model}): {e}")
+            # SDK exceptions quote the failing request, which can include the
+            # Authorization header — so scrub before this reaches a log file.
+            logger.warning(
+                "%s call failed (attempt %d/%d, model=%s): %s",
+                provider, attempt, _MAX_ATTEMPTS, model,
+                api_keys_module.scrub(str(e), request_secrets()),
+            )
             if attempt < _MAX_ATTEMPTS:
                 time.sleep(2 ** (attempt - 1))
-    return f"{provider} Error ({model}): {last_error}"
+
+    # Exhausted retries are reported by *returning* the error rather than
+    # raising (callers treat an "<Provider> Error" body as a soft failure), and
+    # this string can end up in front of the user — scrub it too.
+    return api_keys_module.scrub(
+        f"{provider} Error ({model}): {last_error}", request_secrets()
+    )
 
 class BaseLLM(ABC):
     def __init__(self, model: str, temperature: float = 0.0, api_key: Optional[str] = None):
+        # The *configured* model. What a given call actually uses may be the
+        # per-request choice instead — see OpenRouterLLM.active_model.
         self.model = model
         self.temperature = temperature
         self.api_key = api_key
 
     @abstractmethod
-    def _call_api(self, prompt: str) -> str:
+    def _call_api(self, prompt: str, temperature: float = None) -> str:
         """
         Abstract method that child classes must implement.
         This handles the specific API call to the provider.
+
+        ``temperature`` overrides the instance's own for one call. It is passed
+        only by the answer-generation path: the pipeline's internal decision
+        calls (hop bridging, keyword extraction) stay deterministic, because
+        making those random changes which documents get retrieved rather than
+        how the answer reads.
         """
         pass
 
@@ -65,34 +88,62 @@ class BaseLLM(ABC):
 
 
 class OpenAILLM(BaseLLM):
+    """
+    Direct OpenAI models. The per-request model choice is an OpenRouter id, so
+    it deliberately does *not* apply here — only the key is resolved late.
+    """
     def __init__(self, model: str = "gpt-4o", temperature: float = 0.0, api_key: str = ""):
         super().__init__(model, temperature, api_key)
-        self.client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
 
-    def _call_api(self, prompt: str) -> str:
-        return _chat_with_retry(self.client, "OpenAI", self.model, prompt, self.temperature)
+    @property
+    def client(self) -> OpenAI:
+        # Built per call rather than in __init__: a deployment where users bring
+        # their own keys has none at construction time, and raising there used to
+        # make the whole pipeline unconstructible.
+        return OpenAI(api_key=self.api_key or os.getenv("OPENAI_API_KEY"))
+
+    def _call_api(self, prompt: str, temperature: float = None) -> str:
+        return _chat_with_retry(
+            self.client, "OpenAI", self.model, prompt,
+            self.temperature if temperature is None else temperature,
+        )
 
 
 class OpenRouterLLM(BaseLLM):
     """
     Base class for any model routed via OpenRouter.
-    It uses the OpenAI SDK but points to the OpenRouter URL.
+
+    Both the key and the model are resolved at call time from the request
+    context, so one shared instance can serve queries that chose different
+    models with different credentials. ``self.model`` stays the fallback for
+    requests that expressed no preference.
     """
     def __init__(self, model: str, temperature: float = 0.0, api_key: str = ""):
         super().__init__(model, temperature, api_key)
-        
-        # OpenRouter Configuration
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
-            default_headers={
-                "HTTP-Referer": "https://crag.nevatal.tech", 
-                "X-Title": "CRAG MultiHop RAG"
-            }
-        )
 
-    def _call_api(self, prompt: str) -> str:
-        return _chat_with_retry(self.client, "OpenRouter", self.model, prompt, self.temperature)
+    @property
+    def client(self) -> OpenAI:
+        """Cached client for whichever key applies to this request."""
+        return openrouter_client(self.api_key or None)
+
+    @property
+    def active_model(self) -> str:
+        """The model this call should use: the request's choice, else ours."""
+        return resolve_llm_model(self.model)
+
+    def _call_api(self, prompt: str, temperature: float = None) -> str:
+        model = self.active_model
+        try:
+            client = self.client
+        except MissingAPIKeyError as e:
+            # Same soft-failure contract as an exhausted retry: callers already
+            # recognise an "OpenRouter Error" body and degrade around it.
+            logger.error("[OpenRouter] %s", e)
+            return f"OpenRouter Error ({model}): {e}"
+        return _chat_with_retry(
+            client, "OpenRouter", model, prompt,
+            self.temperature if temperature is None else temperature,
+        )
 
 
 class ClaudeLLM(OpenRouterLLM):

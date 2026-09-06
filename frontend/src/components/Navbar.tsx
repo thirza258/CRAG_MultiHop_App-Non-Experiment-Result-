@@ -46,13 +46,13 @@ const Navbar: React.FC = () => {
   ];
 
   return (
-    <nav className="fixed top-0 w-full z-50 bg-slate-950/85 backdrop-blur-md border-b border-slate-800/80">
+    <nav className="fixed top-0 z-50 w-full border-b border-[hsl(var(--border))] bg-[hsl(var(--background))]">
       <div className="container mx-auto px-6 h-16 flex items-center justify-between">
         
         {/* Logo Section */}
-        <Link to="/" className="flex items-center gap-2.5 group" aria-label="CRAG MultiHop RAG — home">
-          <img src="/logo.svg" alt="CRAG Logo" className="h-7 w-7 transition-transform group-hover:scale-105" />
-          <span className="whitespace-nowrap text-lg sm:text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white via-slate-200 to-cyan-400">
+        <Link to="/" className="flex items-center gap-2.5" aria-label="CRAG MultiHop RAG — home">
+          <img src="/logo.svg" alt="" className="h-6 w-6" />
+          <span className="whitespace-nowrap text-base font-semibold text-[hsl(var(--foreground))]">
             <span className="md:hidden">CRAG MultiHop RAG</span>
             <span className="hidden md:inline">
               CRAG MultiHop RAG
@@ -70,8 +70,8 @@ const Navbar: React.FC = () => {
                 to={link.path}
                 className={`transition-colors py-1 ${
                   isActive
-                    ? "text-cyan-400 font-semibold border-b-2 border-cyan-400"
-                    : "text-slate-400 hover:text-cyan-400"
+                    ? "text-[hsl(var(--foreground))] font-semibold border-b-2 border-[hsl(var(--primary))]"
+                    : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
                 }`}
               >
                 {link.label}
@@ -85,34 +85,34 @@ const Navbar: React.FC = () => {
           {username ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="relative h-10 w-10 rounded-full focus:ring-2 focus:ring-cyan-500">
-                  <Avatar className="h-10 w-10 border border-slate-700">
+                <Button variant="ghost" className="relative h-9 w-9 rounded-full">
+                  <Avatar className="h-9 w-9 border border-[hsl(var(--border))]">
                     <AvatarImage src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`} alt={username} />
-                    <AvatarFallback className="bg-slate-800 text-cyan-400 font-bold">
+                    <AvatarFallback className="bg-[hsl(var(--muted))] text-xs font-medium text-[hsl(var(--foreground))]">
                       {getInitials(username)}
                     </AvatarFallback>
                   </Avatar>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent className="w-56 bg-slate-900 border-slate-800 text-slate-200" align="end" forceMount>
+              <DropdownMenuContent className="w-56 border-[hsl(var(--border))] bg-[hsl(var(--popover))] text-[hsl(var(--popover-foreground))]" align="end" forceMount>
                 <DropdownMenuLabel className="font-normal">
                   <div className="flex flex-col space-y-1">
-                    <p className="text-sm font-medium leading-none text-white">{username}</p>
-                    <p className="text-xs leading-none text-slate-400">{email || `${username}@user.local`}</p>
+                    <p className="text-sm font-medium leading-none">{username}</p>
+                    <p className="text-xs leading-none text-[hsl(var(--muted-foreground))]">{email || `${username}@user.local`}</p>
                   </div>
                 </DropdownMenuLabel>
-                <DropdownMenuSeparator className="bg-slate-800" />
-                <DropdownMenuItem className="focus:bg-slate-800 focus:text-cyan-400 cursor-pointer" onClick={() => navigate("/chat")}>
+                <DropdownMenuSeparator className="bg-[hsl(var(--border))]" />
+                <DropdownMenuItem className="cursor-pointer focus:bg-[hsl(var(--accent))]" onClick={() => navigate("/chat")}>
                   <User className="mr-2 h-4 w-4" />
                   <span>Open Chat</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem className="focus:bg-slate-800 focus:text-cyan-400 cursor-pointer" onClick={() => navigate("/docs")}>
+                <DropdownMenuItem className="cursor-pointer focus:bg-[hsl(var(--accent))]" onClick={() => navigate("/docs")}>
                   <Settings className="mr-2 h-4 w-4" />
                   <span>Documentation</span>
                 </DropdownMenuItem>
-                <DropdownMenuSeparator className="bg-slate-800" />
+                <DropdownMenuSeparator className="bg-[hsl(var(--border))]" />
                 <DropdownMenuItem 
-                  className="focus:bg-red-900/50 focus:text-red-400 text-red-400 cursor-pointer"
+                  className="cursor-pointer text-[hsl(var(--destructive))] focus:bg-[hsl(var(--accent))] focus:text-[hsl(var(--destructive))]"
                   onClick={handleLogout}
                 >
                   <LogOut className="mr-2 h-4 w-4" />
@@ -121,7 +121,7 @@ const Navbar: React.FC = () => {
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Button onClick={() => navigate("/login")} className="bg-cyan-600 hover:bg-cyan-500 text-white font-medium shadow-md shadow-cyan-950/50">
+            <Button onClick={() => navigate("/login")} className="bg-[hsl(var(--primary))] font-medium text-[hsl(var(--primary-foreground))] hover:opacity-90">
               Get Started
             </Button>
           )}
@@ -129,7 +129,7 @@ const Navbar: React.FC = () => {
 
         {/* Mobile Menu Toggle */}
         <button
-          className="md:hidden text-slate-300 hover:text-white hover:bg-slate-800 p-2 rounded-md transition-colors"
+          className="rounded p-2 text-[hsl(var(--muted-foreground))] transition-colors hover:text-[hsl(var(--foreground))] md:hidden"
           onClick={() => setIsMenuOpen(!isMenuOpen)}
           aria-label={isMenuOpen ? "Close menu" : "Open menu"}
           aria-expanded={isMenuOpen}
@@ -140,7 +140,7 @@ const Navbar: React.FC = () => {
 
       {/* Mobile Menu Dropdown */}
       {isMenuOpen && (
-        <div className="md:hidden bg-slate-950/95 border-b border-slate-800 p-5 flex flex-col gap-4 animate-in slide-in-from-top-5">
+        <div className="flex flex-col gap-4 border-b border-[hsl(var(--border))] bg-[hsl(var(--background))] p-5 md:hidden">
           {navLinks.map((link) => {
             const isActive = location.pathname === link.path;
             return (
@@ -149,7 +149,7 @@ const Navbar: React.FC = () => {
                 to={link.path}
                 onClick={() => setIsMenuOpen(false)}
                 className={`text-base font-medium py-1.5 transition-colors ${
-                  isActive ? "text-cyan-400 font-semibold" : "text-slate-300 hover:text-cyan-400"
+                  isActive ? "font-semibold text-[hsl(var(--foreground))]" : "text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
                 }`}
               >
                 {link.label}
@@ -157,18 +157,18 @@ const Navbar: React.FC = () => {
             );
           })}
 
-          <div className="h-px bg-slate-800/80 my-1" />
+          <div className="my-1 h-px bg-[hsl(var(--border))]" />
           
           {username ? (
             <>
               <div className="flex items-center gap-3 px-2 py-2">
                 <Avatar className="h-9 w-9">
                   <AvatarImage src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`} />
-                  <AvatarFallback className="bg-slate-800 text-cyan-400">{getInitials(username)}</AvatarFallback>
+                  <AvatarFallback className="bg-[hsl(var(--muted))] text-xs font-medium">{getInitials(username)}</AvatarFallback>
                 </Avatar>
                 <div>
-                  <p className="text-slate-100 font-medium text-sm">{username}</p>
-                  <p className="text-slate-400 text-xs">{email || `${username}@user.local`}</p>
+                  <p className="text-sm font-medium">{username}</p>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">{email || `${username}@user.local`}</p>
                 </div>
               </div>
               <Button variant="destructive" onClick={handleLogout} className="w-full justify-start mt-1">
@@ -176,7 +176,7 @@ const Navbar: React.FC = () => {
               </Button>
             </>
           ) : (
-            <Button className="w-full bg-cyan-600 hover:bg-cyan-500 text-white" onClick={() => navigate("/login")}>
+            <Button className="w-full bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] hover:opacity-90" onClick={() => navigate("/login")}>
               Get Started
             </Button>
           )}

@@ -46,36 +46,36 @@ const LoginPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-950">
+    <div className="flex min-h-screen items-center justify-center bg-[hsl(var(--background))] px-4">
       <form
-        className="bg-slate-900 p-8 rounded-lg shadow-md w-80 space-y-4 border border-slate-800"
+        className="w-80 space-y-4 rounded border border-[hsl(var(--border))] p-8"
         onSubmit={handleSubmit}
       >
-        <h1 className="text-2xl font-bold mb-6 text-center text-white">Welcome Back!</h1>
-        <p className="text-sm mb-6 text-center text-slate-400">CRAG MultiHop RAG — research build</p>
-        <div className="w-full h-px bg-slate-700 my-4"></div>
-        <h2 className="text-xl font-bold mb-4 text-center text-white">Login</h2>
+        <h1 className="mb-1 text-center text-xl font-semibold">Sign in</h1>
+        <p className="mb-6 text-center text-sm text-[hsl(var(--muted-foreground))]">CRAG MultiHop RAG — research build</p>
+        <div className="my-4 h-px w-full bg-[hsl(var(--border))]" />
+        
         <div>
-          <label className="block mb-2 text-sm font-medium text-slate-300" htmlFor="username">
+          <label className="mb-2 block text-sm font-medium text-[hsl(var(--foreground))]" htmlFor="username">
             Username
           </label>
           <input
             id="username"
             type="text"
-            className="w-full border border-slate-700 rounded p-2 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-2 text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]"
             value={username}
             onChange={e => setUsername(e.target.value)}
             autoComplete="username"
           />
         </div>
         <div>
-          <label className="block mb-2 text-sm font-medium text-slate-300" htmlFor="email">
+          <label className="mb-2 block text-sm font-medium text-[hsl(var(--foreground))]" htmlFor="email">
             Email
           </label>
           <input
             id="email"
             type="email"
-            className="w-full border border-slate-700 rounded p-2 bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full rounded border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-2 text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]"
             value={email}
             onChange={e => setEmail(e.target.value)}
             autoComplete="email"
@@ -83,14 +83,14 @@ const LoginPage: React.FC = () => {
         </div>
         <button
           type="submit"
-          className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-500 transition-colors"
+          className="w-full rounded bg-[hsl(var(--primary))] py-2 text-sm font-medium text-[hsl(var(--primary-foreground))] transition-opacity hover:opacity-90"
         >
           Login
         </button>
         <button
           type="button"
           onClick={() => navigate("/")}
-          className="w-full bg-slate-700 text-white py-2 rounded hover:bg-slate-600 transition-colors mt-2"
+          className="mt-2 w-full rounded border border-[hsl(var(--border))] py-2 text-sm font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--muted))]"
         >
           Go Back
         </button>

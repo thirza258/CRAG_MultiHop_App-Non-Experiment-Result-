@@ -11,6 +11,8 @@ import unittest
 from unittest import mock
 
 try:
+    from common.runtime import context as runtime_context
+    from common.runtime.config import normalize_pipeline_config
     from multi_hop import multi_hop_rag
     from multi_hop.multi_hop_rag import MultiHopRetriever
     IMPORT_ERROR = ""
@@ -698,6 +700,89 @@ class FinalRerankTests(unittest.TestCase):
         self.assertIn("Text: c1", chunks[1])
         # The equal-length chunk/meta contract must survive the fallback.
         self.assertEqual(metas, [_meta(0), _meta(1)])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# max_hops — per request, not per instance
+# ──────────────────────────────────────────────────────────────────────
+
+@unittest.skipIf(MultiHopRetriever is None, f"multi_hop unavailable: {IMPORT_ERROR}")
+class MaxHopsPerRequestTests(unittest.TestCase):
+    """One retriever instance serves every concurrent query.
+
+    The pipeline used to assign the ceiling onto that instance before each
+    query, so two requests asking for different hop counts raced and whichever
+    wrote last set the ceiling for both. It is read from the request context now.
+    """
+
+    def _runtime(self, **params):
+        return runtime_context.use_runtime(runtime_context.RuntimeSettings(
+            params=normalize_pipeline_config(params)
+        ))
+
+    def test_the_request_ceiling_wins_over_the_configured_one(self):
+        retriever = _build(NarrowRetriever([]), max_hops=3)
+
+        with self._runtime(max_hops=1):
+            self.assertEqual(retriever.max_hops, 1)
+
+    def test_an_unset_ceiling_leaves_the_configured_one(self):
+        # A deployment that tuned multi_hop_config down must not be pushed back
+        # up by a request that never mentioned hops.
+        retriever = _build(NarrowRetriever([]), max_hops=2)
+
+        with self._runtime():
+            self.assertEqual(retriever.max_hops, 2)
+
+        self.assertEqual(retriever.max_hops, 2)
+
+    def test_the_ceiling_does_not_outlive_the_request(self):
+        retriever = _build(NarrowRetriever([]), max_hops=3)
+
+        with self._runtime(max_hops=1):
+            pass
+
+        self.assertEqual(retriever.max_hops, 3)
+
+    def test_two_concurrent_requests_do_not_share_a_ceiling(self):
+        import threading
+
+        retriever = _build(NarrowRetriever([]), max_hops=3)
+        seen = {}
+        start = threading.Barrier(2)
+
+        def query(name, hops):
+            with self._runtime(max_hops=hops):
+                start.wait(timeout=5)   # both inside their runtime at once
+                seen[name] = retriever.max_hops
+
+        threads = [
+            threading.Thread(target=query, args=("a", 1)),
+            threading.Thread(target=query, args=("b", 3)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        self.assertEqual(seen, {"a": 1, "b": 3})
+
+    def test_the_hop_loop_honours_the_request_ceiling(self):
+        # Not just the attribute: the loop that reads it.
+        inner = NarrowRetriever([
+            ([_chunk("a")], [_meta(1)]),
+            ([_chunk("b")], [_meta(2)]),
+            ([_chunk("c")], [_meta(3)]),
+        ])
+        retriever = _build(
+            inner, llm=FakeLLM(["INSUFFICIENT: more", "INSUFFICIENT: more", "SUFFICIENT"]),
+            max_hops=3,
+        )
+
+        with self._runtime(max_hops=1):
+            retriever.multi_hop_retrieve("q")
+
+        self.assertEqual(len(inner.calls), 1)
 
 
 # ──────────────────────────────────────────────────────────────────────

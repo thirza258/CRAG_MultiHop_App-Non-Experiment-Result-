@@ -1,19 +1,27 @@
+import logging
 import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import numpy as np
 from typing import List, Literal
 from sklearn.metrics.pairwise import cosine_similarity
 
+logger = logging.getLogger(__name__)
+
 class DocumentChunker:
     def __init__(self, 
                  strategy: Literal["fixed", "paragraph", "semantic", "recursive"] = "recursive", 
                  chunk_size: int = 500, 
                  overlap: int = 50,
-                 embedding_client=None):
+                 embedding_client=None,
+                 embedding_model: str = "openai/text-embedding-3-small"):
         self.strategy = strategy
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.client = embedding_client
+        # Only the "semantic" strategy uses this, and only to find split points
+        # — those vectors are thrown away, never stored. So unlike the model a
+        # collection is indexed with, any embedding model is safe here.
+        self.embedding_model = embedding_model
 
     def chunk(self, text: str) -> List[str]:
         print(f"Chunking document with strategy '{self.strategy}'...")
@@ -112,12 +120,17 @@ class DocumentChunker:
         try:
             embeddings_resp = self.client.embeddings.create(
                 input=sentences,
-                model="text-embedding-3-small"
+                model=self.embedding_model
             )
             vecs =[d.embedding for d in embeddings_resp.data]
         except Exception as e:
-            print(f"Embedding failed: {e}")
-            return sentences
+            # Returning `sentences` here would index the document one sentence
+            # per chunk and report success. Semantic chunking is a choice the
+            # user makes explicitly, and a document stored under a split they
+            # did not ask for is indistinguishable afterwards from one that
+            # worked — so fail, and let the caller retry or surface it.
+            logger.error(f"[Chunker] Semantic chunking could not embed: {e}")
+            raise
 
         distances =[]
         for i in range(len(vecs) - 1):

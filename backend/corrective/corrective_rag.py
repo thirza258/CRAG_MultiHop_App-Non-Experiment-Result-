@@ -1,5 +1,6 @@
 import logging
 from typing import Any, List, Dict
+from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
 from .corrective_evaluator import CRAGEvaluator
 from .external_search import ExternalSearcher
@@ -19,8 +20,24 @@ class CorrectiveRAG:
         self.external       = ExternalSearcher(config)
         self.query_expander = QueryExpander(config)
         # self.seen_urls: set = set()
-        self.top_k          = getattr(retriever, 'top_k', 5)
+        self._configured_top_k = getattr(retriever, 'top_k', 5)
         self.emitter        = NULL_EMITTER
+
+    @property
+    def top_k(self) -> int:
+        """Delegates to the wrapped retriever, which resolves it per request.
+
+        MultiHopRetriever reads this off whatever it wraps, so a copy taken at
+        construction would leave the two layers working to different budgets.
+        """
+        inner = getattr(self.retriever, "top_k", None)
+        if isinstance(inner, int) and inner > 0:
+            return inner
+        return getattr(self, "_configured_top_k", 5)
+
+    @top_k.setter
+    def top_k(self, value) -> None:
+        self._configured_top_k = value
 
     # def reset_seen_urls(self) -> None:
     #     self.seen_urls.clear()
@@ -36,11 +53,23 @@ class CorrectiveRAG:
                 if url := meta.get("url"):
                     seen_urls.add(url)
 
+    @property
+    def _expansion_enabled(self) -> bool:
+        """Whether this request wants LLM query rewriting at all.
+
+        Switching it off is not only a saved LLM call per rewrite: the
+        ambiguous-resolution retries are *built* on the rewrites, so the retry
+        loop goes away with them. What remains is the plain graded retrieval.
+        """
+        return bool(resolve_param("use_query_expansion", True))
+
     def _safe_keyword(self, query: str) -> str:
         """
         The keyword is only a retrieval hint, and expanding it costs an LLM call.
         A dead expander must not kill the query — the raw query works as keyword.
         """
+        if not self._expansion_enabled:
+            return query
         try:
             return self.query_expander.to_keyword(query)
         except Exception as e:
@@ -49,14 +78,19 @@ class CorrectiveRAG:
 
     def _safe_reformulate(self, query: str) -> str:
         """Same reasoning as _safe_keyword — fall back to the original query."""
+        if not self._expansion_enabled:
+            return query
         try:
             return self.query_expander.reformulate(query)
         except Exception as e:
             logger.warning(f"[_safe_reformulate] reformulation failed, using raw query: {e}")
             return query
 
-    def _safe_expand_multiple(self, query: str, n: int = 3) -> List[str]:
+    def _safe_expand_multiple(self, query: str, n: int = None) -> List[str]:
         """Alternative phrasings are a bonus retry; without them we just skip the retries."""
+        if not self._expansion_enabled:
+            return []
+        n = n if n is not None else int(resolve_param("expansion_queries", 3))
         try:
             return self.query_expander.expand_multiple(query, n=n)
         except Exception as e:
@@ -163,7 +197,7 @@ class CorrectiveRAG:
 
         reformulated = self._safe_reformulate(query)
         keyword      = self._safe_keyword(reformulated)
-        n_ways       = self._safe_expand_multiple(query, n=3)
+        n_ways       = self._safe_expand_multiple(query)
 
         logger.info(f"[handle_ambiguous] reformulated query: '{reformulated}'")
         logger.info(f"[handle_ambiguous] excluded URLs: {seen_urls}")
@@ -211,21 +245,40 @@ class CorrectiveRAG:
         """
         Runs Wikipedia and News searches with individual error isolation.
         Always returns whatever was successfully fetched — never raises.
+
+        Each source, and the escalation as a whole, is switchable. Returning
+        nothing is already a supported outcome (the callers fall back to the
+        local chunks), so switching everything off narrows the answer to the
+        indexed corpus rather than breaking anything.
         """
+        if not resolve_param("use_external_search", True):
+            logger.info("[_safe_external_search] external search disabled by config")
+            self.emitter.emit(
+                "corrective_pipeline",
+                "External search is switched off — answering from the indexed corpus only",
+            )
+            return [], []
+
         wiki_chunks, wiki_metas = [], []
         news_chunks, news_metas = [], []
 
-        try:
-            wiki_chunks, wiki_metas = self.external.search_wikipedia(query)
-            logger.info(f"[_safe_external_search] Wikipedia returned {len(wiki_chunks)} chunks")
-        except Exception as e:
-            logger.warning(f"[_safe_external_search] Wikipedia failed entirely: {e}")
+        if resolve_param("use_wikipedia", True):
+            try:
+                wiki_chunks, wiki_metas = self.external.search_wikipedia(query)
+                logger.info(f"[_safe_external_search] Wikipedia returned {len(wiki_chunks)} chunks")
+            except Exception as e:
+                logger.warning(f"[_safe_external_search] Wikipedia failed entirely: {e}")
+        else:
+            logger.info("[_safe_external_search] Wikipedia disabled by config")
 
-        try:
-            news_chunks, news_metas = self.external.search_news(query)
-            logger.info(f"[_safe_external_search] News returned {len(news_chunks)} chunks")
-        except Exception as e:
-            logger.warning(f"[_safe_external_search] News failed entirely: {e}")
+        if resolve_param("use_news", True):
+            try:
+                news_chunks, news_metas = self.external.search_news(query)
+                logger.info(f"[_safe_external_search] News returned {len(news_chunks)} chunks")
+            except Exception as e:
+                logger.warning(f"[_safe_external_search] News failed entirely: {e}")
+        else:
+            logger.info("[_safe_external_search] News disabled by config")
 
         return wiki_chunks + news_chunks, wiki_metas + news_metas
 

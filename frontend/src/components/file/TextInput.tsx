@@ -22,8 +22,8 @@ interface TextInputProps {
         onChange={onChange}
         placeholder="Paste your content here..."
         disabled={disabled}
-        className={`w-full border rounded p-2 resize-y  text-black ${
-          disabled ? "bg-gray-100 cursor-not-allowed opacity-50" : ""
+        className={`w-full resize-y rounded border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-2 text-sm text-[hsl(var(--foreground))] ${
+          disabled ? "cursor-not-allowed bg-[hsl(var(--muted))] opacity-50" : ""
         }`}
       />
     </div>

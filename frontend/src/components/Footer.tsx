@@ -4,7 +4,7 @@ import { Github } from "lucide-react";
 import { REPO_URL, SITE_NAME } from "../lib/seo";
 
 const Footer: React.FC = () => (
-  <footer className="border-t border-border bg-card/40">
+  <footer className="border-t border-border bg-[hsl(var(--muted))]">
     <div className="mx-auto max-w-6xl px-6 py-12">
       <div className="grid gap-8 md:grid-cols-[1.5fr_1fr_1fr]">
         <div>

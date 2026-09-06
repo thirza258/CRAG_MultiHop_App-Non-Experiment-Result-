@@ -40,7 +40,7 @@ const Docs: React.FC = () => {
               </div>
 
               {/* Content Card */}
-              <div className="grid gap-6 md:grid-cols-2 bg-card/50 border border-border rounded-lg p-6 hover:border-primary/50 transition-colors duration-300">
+              <div className="grid gap-6 md:grid-cols-2 bg-[hsl(var(--muted))] border border-border rounded p-6 hover:border-primary/50 transition-colors duration-300">
                 {/* Text Content */}
                 <div className="flex flex-col justify-center space-y-4">
                   <div className="flex items-center gap-3">
@@ -57,8 +57,8 @@ const Docs: React.FC = () => {
                 </div>
 
                 {/* Image Content */}
-                <div className="relative rounded-lg overflow-hidden border border-border bg-muted/30 aspect-video group cursor-pointer">
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-transparent transition-all z-10">
+                <div className="relative rounded overflow-hidden border border-border bg-muted/30 aspect-video group cursor-pointer">
+                  <div className="absolute inset-0 flex items-center justify-center bg-[hsl(var(--muted))] group-hover:bg-transparent transition-all z-10">
                     <span className="sr-only">View Screenshot</span>
                   </div>
                   <img

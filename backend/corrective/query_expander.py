@@ -1,7 +1,9 @@
 from typing import List, Dict, Any
 from pydantic import BaseModel, field_validator, model_validator
 from openai import OpenAI
-import os
+
+from ai_handler.openrouter import openrouter_client
+from common.runtime.context import resolve_llm_model
 
 class KeywordList(BaseModel):
     keywords: List[str]
@@ -33,15 +35,22 @@ class KeywordList(BaseModel):
 class QueryExpander:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY")
-        )
+        # The configured fallback model; a request may pick its own, so always
+        # go through active_model rather than reading this directly.
         self.model = config.get("llm_model", "google/gemini-3-flash-preview")
+
+    @property
+    def client(self) -> OpenAI:
+        """Client for the key this request supplied, else the server's."""
+        return openrouter_client()
+
+    @property
+    def active_model(self) -> str:
+        return resolve_llm_model(self.model)
 
     def _call(self, prompt: str, max_tokens: int = 100) -> str:
         response = self.client.chat.completions.create(
-            model=self.model,
+            model=self.active_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=max_tokens

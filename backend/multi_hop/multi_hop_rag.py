@@ -3,6 +3,7 @@ from typing import Any, List, Dict
 import inspect
 import json
 from ai_handler.llm import OpenRouterLLM
+from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
 import logging
 import hashlib
@@ -33,8 +34,8 @@ class MultiHopRetriever:
         self.llm = OpenRouterLLM(
             model=config.get("llm_model", "google/gemini-3-flash-preview")
         )
-        self.max_hops = config.get("max_hops", 3)
-        self.top_k = config.get(
+        self._configured_max_hops = config.get("max_hops", 3)
+        self._configured_top_k = config.get(
             "top_k",
             getattr(retriever, "top_k", 5)
         )
@@ -47,6 +48,38 @@ class MultiHopRetriever:
         self.emitter = NULL_EMITTER
         # Probed once: CorrectiveRAG.retrieve takes seen_urls, Dense/SparseRAG do not.
         self._inner_accepts_seen_urls = self._accepts_seen_urls(retriever)
+
+    @property
+    def max_hops(self) -> int:
+        """This request's hop ceiling.
+
+        Read per call rather than held as state. It used to be assigned onto
+        this object by the pipeline before each query, which on the shared
+        single-instance pipeline meant two concurrent queries asking for
+        different hop counts raced: whichever wrote last set the ceiling for
+        both.
+        """
+        return int(resolve_param(
+            "max_hops", getattr(self, "_configured_max_hops", 3)
+        ))
+
+    @max_hops.setter
+    def max_hops(self, value) -> None:
+        self._configured_max_hops = value
+
+    @property
+    def top_k(self) -> int:
+        """The hop's chunk budget for this request.
+
+        Read per call rather than captured at construction: the wrapped
+        retriever resolves the same value, and truncating to a stale copy here
+        would quietly discard chunks the inner layer was asked to return.
+        """
+        return int(resolve_param("top_k", getattr(self, "_configured_top_k", 5)))
+
+    @top_k.setter
+    def top_k(self, value) -> None:
+        self._configured_top_k = value
 
     @staticmethod
     def _accepts_seen_urls(retriever) -> bool:

@@ -8,6 +8,7 @@ from sentence_transformers import CrossEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel, AutoModelForCausalLM
 import json
 from common.memory import _local_model_path
+from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
 from collections import defaultdict
 
@@ -35,8 +36,8 @@ class HybridRAG:
             self.sparse_rag = SparseRAG(sparse_config)
 
         self.reranker_model_name = config.get("reranker_model", "jina")
-        self.final_top_k         = config.get("retrieval_top_k", 5)
-        self.top_k               = config.get("top_k", 5)
+        self._configured_final_top_k = config.get("retrieval_top_k", 5)
+        self._configured_top_k       = config.get("top_k", 5)
         self.documents: List[str] = []
 
         # Callers inject the real emitter through set_emitter(); until then a
@@ -58,6 +59,31 @@ class HybridRAG:
                 f"continuing without reranking",
                 exc_info=True,
             )
+
+    @property
+    def top_k(self) -> int:
+        """Candidate budget, matching what the base retrievers were asked for."""
+        return int(resolve_param("top_k", getattr(self, "_configured_top_k", 5)))
+
+    @top_k.setter
+    def top_k(self, value) -> None:
+        self._configured_top_k = value
+
+    @property
+    def final_top_k(self) -> int:
+        """How many chunks survive the merge/rerank — what the LLM actually reads.
+
+        Its own knob rather than sharing top_k: retrieving widely and then
+        keeping a few is the normal shape of a rerank, so the two budgets are
+        independently useful.
+        """
+        return int(
+            resolve_param("rerank_top_k", getattr(self, "_configured_final_top_k", 5))
+        )
+
+    @final_top_k.setter
+    def final_top_k(self, value) -> None:
+        self._configured_final_top_k = value
 
     def _load_reranker(self) -> None:
         cache_key = self.reranker_model_name

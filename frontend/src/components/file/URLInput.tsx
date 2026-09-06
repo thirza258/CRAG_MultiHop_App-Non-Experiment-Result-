@@ -23,8 +23,8 @@ interface UrlInputProps {
         onChange={onChange}
         placeholder="https://example.com"
         disabled={disabled}
-        className={`w-full border rounded p-2 text-black ${
-          disabled ? "bg-gray-100 cursor-not-allowed opacity-50" : ""
+        className={`w-full rounded border border-[hsl(var(--input))] bg-[hsl(var(--background))] p-2 text-sm text-[hsl(var(--foreground))] ${
+          disabled ? "cursor-not-allowed bg-[hsl(var(--muted))] opacity-50" : ""
         }`}
       />
     </div>

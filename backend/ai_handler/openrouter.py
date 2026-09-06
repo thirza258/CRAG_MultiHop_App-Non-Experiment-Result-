@@ -10,7 +10,7 @@ when that variable was missing. That had two consequences worth removing:
    singleton pipeline.
 
 So clients are built here, on demand, from the key that applies to the current
-request (see :mod:`common.runtime_context`), and cached by key fingerprint so a
+request (see :mod:`common.runtime.context`), and cached by key fingerprint so a
 call chain does not pay for a new client per step.
 """
 
@@ -20,8 +20,8 @@ from typing import Optional
 
 from openai import OpenAI
 
-from common import api_keys as api_keys_module
-from common.runtime_context import openrouter_api_key
+from common.runtime import api_keys as api_keys_module
+from common.runtime.context import openrouter_api_key
 
 logger = logging.getLogger(__name__)
 

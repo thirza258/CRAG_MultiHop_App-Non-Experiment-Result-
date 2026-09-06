@@ -200,17 +200,104 @@ docker compose exec backend python insert_base_dataset.py
 
 ### Configuring the pipeline per query
 
-The **Pipeline** panel at the top of the chat sidebar controls how the next query is answered. The choice is saved in the browser and sent with every question as a `CONFIG` object.
+The **Pipeline** panel in the chat sidebar controls how the next query is answered. The choice is saved in the browser and sent with every question as a `CONFIG` object. It is grouped into collapsible sections; everything defaults to the pipeline the app has always run.
+
+**Stages** — each one is a genuine composition change, not a flag the pipeline ignores:
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Multi-hop** | on/off + max hops 1–3 | Decompose the question into follow-up lookups, and the hop ceiling. 3 is the ceiling as well as the usual default: each hop is an LLM decision call plus a retrieval plus, with corrective on, a grading pass. |
+| **Corrective (CRAG)** | on/off | Self-grade retrieved context and correct it when weak. |
+| **Reranker** | on/off | Reorder merged candidates with the cross-encoder. On/off only — it runs from a model downloaded to the server, not through OpenRouter. |
+| **Answer scoring** | on/off | Rate the answer with the RAGAS judge. Off saves two LLM-judge passes and an embedding call per question. |
+
+**Models**:
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Chat model** | any OpenRouter chat model | Answer generation, multi-hop decisions and query expansion. Left as *Server default*, each stage keeps the model configured in `rag/rag_service.py`. |
+| **Embedding model** | any OpenRouter embedding model | Embeds **newly indexed documents** — see the caveat below. |
+| **Temperature** | 0.0–2.0 | How freely the *answer* is worded. The pipeline's own decision calls (which documents to fetch) stay deterministic either way — sampling those would change retrieval, not phrasing. |
+
+**Retrieval**:
 
 | Control | Options | Effect |
 |---------|---------|--------|
 | **Corpus** | Auto / My docs / Base corpus | Which ChromaDB collection to search. `Auto` keeps the historic behaviour (your documents when you have any, otherwise the shared corpus). `My docs` refuses to silently fall back — if you have no documents it says so. |
 | **Retrievers** | Both / Dense / BM25 | Run both base retrievers, or only embedding similarity, or only keyword search. |
-| **Multi-hop** | on/off + max hops 1–3 | Whether to decompose the question into follow-up lookups, and the hop ceiling. |
-| **Corrective (CRAG)** | on/off | Whether retrieved context is self-graded and corrected. |
-| **Reranker** | on/off | Whether merged candidates are reordered by the local cross-encoder. |
+| **Chunks retrieved** | 1–20 | How many chunks each retriever fetches before merging. |
+| **Chunks kept** | 1–20 | How many survive the merge/rerank — what the model actually reads. |
+| **Web passages kept** | 1–20 | How many passages the corrective stage keeps from Wikipedia / news. Separate from the two above: these are fetched live and scored in memory, not read from the index. |
+| **Drop stop words** | on/off | Strip English stop words before BM25 tokenisation. Changing it rebuilds the BM25 index, because the query is tokenised the same way the corpus was. |
 
-Switching a stage off is a genuine composition change, not a flag the pipeline ignores: with corrective off, multi-hop wraps the base retriever directly. Server-side, `backend/common/pipeline_config.py` validates and clamps whatever arrives, so **an absent or malformed `CONFIG` runs exactly the default full pipeline** — older clients are unaffected.
+**Corrective detail** (ignored when the Corrective stage is off):
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Strictness** | Default / Lenient / Balanced / Strict | How readily a chunk is accepted rather than escalated to the web. A preset rather than three raw thresholds — see below. |
+| **External search** | on/off | Whether weak local context may escalate to the web at all. |
+| **Wikipedia** / **News** | on/off each | The two external sources, individually. News needs a NewsAPI key. |
+| **Query expansion** | on/off + 1–5 phrasings | LLM-rewritten keywords and reformulations. Off also removes the ambiguous-resolution retries, which are built on them. |
+| **Knowledge refinement** | on/off | CRAG's strip-level re-scoring of a borderline chunk. Off, an ambiguous chunk stands exactly as retrieved — neither promoted nor discarded. |
+
+**Indexing** (applies to documents uploaded from now on; existing chunks are already split):
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Chunking** | Default / Recursive / Paragraph / Fixed / Semantic | How uploaded documents are split. `Semantic` splits where the topic shifts and costs an embedding call per upload; with no OpenRouter key available it fails the upload rather than quietly falling back to another splitter, because a stored document gives no sign of how it was split. |
+| **Chunk size** | 100–4000 chars | Target characters per chunk. |
+| **Chunk overlap** | 0–1000 chars | Characters repeated between neighbouring chunks. Corrected server-side if it would not leave room to overlap. |
+
+**Scoring detail** (ignored when Answer scoring is off):
+
+| Control | Options | Effect |
+|---------|---------|--------|
+| **Answer relevancy** / **Faithfulness** | on/off each | The two RAGAS metrics. Each is its own judge pass, so switching one off is a real saving. |
+| **Judge model** / **Judge embedding model** | any OpenRouter model | Left on the default, the judge is a *different* model from the one answering — a model scoring its own output flatters itself, which is why the judge is configured separately. |
+
+Two sentinels run through all of this: `null` for a number and `""` for a model id or named strategy both mean **defer to whatever the deployment configured**, deliberately not "use the value written in the client". Giving them concrete defaults would override every deployment's own tuning in `rag/rag_service.py` — a panel nobody touched would silently retune the server.
+
+Every one of these is resolved per request from a `contextvars.ContextVar`, never written onto the pipeline. The pipeline is a single process-wide instance shared by every concurrent query, so a setting stored on it is a setting two users share: whoever wrote last wins for both.
+
+#### Why strictness is a preset, not three thresholds
+
+The corrective grader normalises cosine similarity from `[-100, 100]` into `[0, 1]`, so real relevance scores cluster in roughly 0.5–0.95 and the useful band between "accept this chunk" and "escalate to the web" is only a few hundredths wide. Its decision logic also requires `upper > lower`: set them the other way round and every chunk grades "incorrect" and every query hits external search. Three sliders in a 0.04-wide band can express that pipeline; a preset cannot. `Balanced` reproduces the thresholds the app has always shipped.
+
+#### What is deliberately not configurable
+
+Two models run from snapshots downloaded to the server rather than through OpenRouter, so they are on/off only and cannot be swapped per query: the **reranker** (`jinaai/jina-reranker-v3`) and the **corrective grader** (`intfloat/multilingual-e5-small`). Switching either per request would mean a multi-gigabyte download mid-query. The grader's *strictness* is adjustable; the grader itself is not.
+
+The model lists come from OpenRouter's two public catalogs, proxied and cached by `GET /api/v1/models/`. They are separate endpoints for a reason: embedding models are **not** in OpenRouter's main `/models` catalog at all, they live behind `/embeddings/models`. Both pickers are searchable and also accept a model id typed by hand, so a model released after the cached list still works.
+
+With corrective off, for instance, multi-hop wraps the base retriever directly rather than the graded one. Server-side, `backend/common/runtime/config.py` validates and clamps whatever arrives, so **an absent or malformed `CONFIG` runs exactly the default full pipeline** — older clients are unaffected.
+
+#### Why the embedding model is not a per-query choice
+
+A ChromaDB collection holds one vector space. Every vector in it was produced by one embedding model, and embedding a query with a different model produces a vector of the wrong dimension — ChromaDB rejects it outright, or (same width, different space) it answers with confident nonsense.
+
+So the embedding model is chosen **when a document is indexed**, recorded on the collection, and **enforced at query time**:
+
+- The first document you upload fixes the model for your whole collection. Later uploads reuse it.
+- Dense retrieval always embeds your question with the model the searched corpus was built with. If that differs from your pick, the answer carries a notice saying which model was actually used and why — the setting is overridden out loud, never silently.
+- To switch, delete all your documents (which releases the collection) and re-upload them. The settings panel shows the picker as locked, with that explanation, whenever there is something indexed.
+- The shared base corpus is always locked: it is not yours to re-index.
+
+`GET /api/v1/corpus/<username>/` reports this state so the panel can explain a locked picker up front rather than after the query has run.
+
+### Using your own API keys
+
+The **API keys** panel in the chat sidebar accepts your own credentials:
+
+| Key | What it does | Without it |
+|-----|--------------|------------|
+| **OpenRouter** | Every model call — generation, hop decisions, embeddings, indexing and the RAGAS judge | The server's `OPENROUTER_API_KEY` is used |
+| **NewsAPI** | Corrective retrieval's recent-news lookup | That one lookup is skipped; Wikipedia still runs |
+
+Keys are stored in your browser only, sent with each request as a top-level `KEYS` field, used for that request, and **never written to the database**. They travel separately from `CONFIG` deliberately: `CONFIG` is logged verbatim by the server, while `KEYS` is redacted before any log line and scrubbed out of any error message returned to the browser (`backend/common/runtime/api_keys.py`).
+
+A key you supply is used for indexing too, so bringing your own means you pay for your own embeddings rather than the deployment's. Because indexing runs in a Celery worker, the credentials are handed over through a short-lived Redis entry keyed by a random token rather than as task arguments — task arguments are persisted in the broker and echoed into Celery's logs on failure (`backend/common/runtime/handoff.py`).
+
+This also means the server does not strictly need its own `OPENROUTER_API_KEY`: with none configured, the app still starts and every user brings their own.
 
 ### When a stage fails
 
@@ -239,7 +326,7 @@ All backend settings live in `backend/.env` (see `backend/.env.example`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | — | **Required.** Embeddings + LLM generation via OpenRouter |
+| `OPENROUTER_API_KEY` | — | Embeddings + LLM generation via OpenRouter. The deployment-wide default; users can supply their own in the chat sidebar instead, so this is only required if you want the app usable without one |
 | `SECRET_KEY` | — | Django secret key — set to a long random string |
 | `DEBUG` | `False` | Django debug mode |
 | `DEVELOPMENT_MODE` | `False` | `true` = use SQLite instead of `DATABASE_URL` |
@@ -250,7 +337,7 @@ All backend settings live in `backend/.env` (see `backend/.env.example`):
 | `INSERT_BASE_DATASET` | `false` | Embed + index the MultiHop-RAG corpus on startup (costs API credits) |
 | `OPENAI_API_KEY` | — | Optional, only for OpenAI-direct calls |
 | `LANGSMITH_*` | disabled | Optional LangSmith tracing |
-| `NEWS_API_KEY` | — | Optional, for external search fallback |
+| `NEWS_API_KEY` | — | Optional, for corrective retrieval's news lookup. Users can supply their own in the chat sidebar |
 
 Extra knobs (rarely needed): `MODEL_CACHE_DIR` (model download dir, default `/app/models`), `MODEL_DOWNLOAD_MAX_ATTEMPTS` (default 5), `MODEL_WAIT_TIMEOUT` (worker wait for models, default 900 s), `CHROMA_CONNECT_ATTEMPTS` (default 30).
 
@@ -470,9 +557,21 @@ The Docker Compose setup runs as-is on any VPS with Docker installed — `./depl
 │   ├── multi_hop/              # Multi-hop retrieval orchestration
 │   ├── evaluation/             # RAGAs-based generation evaluation
 │   ├── chroma/                 # ChromaDB helpers
-│   ├── ai_handler/             # LLM clients (OpenRouter/OpenAI) with retry (tests.py inside)
-│   └── common/                 # Chunker, prompts, NLTK setup, helpers (tests.py inside)
+│   ├── ai_handler/             # LLM clients (OpenRouter/OpenAI) with retry, shared client
+│   │                           #   factory, and the OpenRouter model catalog proxy
+│   └── common/                 # Chunker, prompts, NLTK setup, schema, helpers
+│       └── runtime/            # Everything one request chose, and the keys it brought.
+│                               #   The pipeline is a single shared instance, so none of
+│                               #   this may be stored on it:
+│                               #     config      — the CONFIG the browser sends, validated
+│                               #     context     — the ContextVar the stages resolve against
+│                               #     api_keys    — BYOK normalisation, redaction, scrubbing
+│                               #     handoff     — getting both to the Celery worker without
+│                               #                   putting credentials in the broker
+│                               #     log_filters — keys out of every log record
+│                               #     errors      — a failed request vs. a failed run
 └── frontend/                   # React + Vite + Tailwind UI, served by Nginx
+    └── src/components/settings/  # The pipeline panel, model pickers and key inputs
 ```
 
 ---

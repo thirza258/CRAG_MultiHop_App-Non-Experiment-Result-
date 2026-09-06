@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import service from "../services/service";
 import { FileMetadata, ConversationItem } from "../interface";
-import PipelineConfigPanel from "./PipelineConfigPanel";
+import PipelineConfigPanel from "./settings/PipelineConfigPanel";
+import ApiKeysPanel from "./settings/ApiKeysPanel";
 
 const Sidebar: React.FC = () => {
   const navigate = useNavigate();
@@ -93,7 +94,10 @@ return (
     <div className="flex-1 flex flex-col min-h-0 p-4">
 
       {/* Per-query pipeline configuration */}
-      <PipelineConfigPanel />
+      <div className="flex-shrink-0 space-y-3 overflow-y-auto">
+        <PipelineConfigPanel />
+        <ApiKeysPanel />
+      </div>
 
       <hr className="border-[hsl(var(--border))] my-4 flex-shrink-0" />
 
@@ -109,7 +113,7 @@ return (
         </div>
         <div className="flex-1 overflow-y-auto min-h-0">
           {!files?.length ? (
-            <div className="p-4 rounded-lg bg-[hsl(var(--muted))] border border-dashed border-[hsl(var(--border))] text-center">
+            <div className="p-4 rounded bg-[hsl(var(--muted))] border border-dashed border-[hsl(var(--border))] text-center">
               <p className="text-sm text-[hsl(var(--muted-foreground))]">
                 No active content selected.
               </p>
@@ -119,7 +123,7 @@ return (
               {files.map((file) => (
                 <div
                   key={file.id}
-                  className="group flex items-center justify-between p-3 rounded-lg bg-[hsl(var(--background))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors"
+                  className="group flex items-center justify-between p-3 rounded bg-[hsl(var(--background))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -133,7 +137,7 @@ return (
                   </div>
                   <button
                     onClick={() => handleDeleteFile(file.id, file.name)}
-                    className="ml-2 text-[hsl(var(--muted-foreground))] hover:text-red-500 transition-colors flex-shrink-0"
+                    className="ml-2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--destructive))] transition-colors flex-shrink-0"
                     aria-label="Delete document"
                   >
                     <svg

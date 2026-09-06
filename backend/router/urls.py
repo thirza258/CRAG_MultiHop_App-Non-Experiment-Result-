@@ -1,6 +1,8 @@
 from django.urls import path
 from .views import (
+    CorpusInfoView,
     InsertDataView,
+    ModelCatalogView,
     QueryView,
     InsertTextView,
     InsertURLView,
@@ -27,6 +29,11 @@ urlpatterns = [
     path("conversation-history/<str:username>/", ConversationHistoryView.as_view(), name="conversation-history"),
     path("conversation/<str:conversation_id>/", ConversationView.as_view(), name="conversation"),
     path("query/", QueryView.as_view(), name="query"),
+    # Populates the model pickers in the chat settings panel.
+    path("models/", ModelCatalogView.as_view(), name="model-catalog"),
+    # Tells the panel which embedding model each corpus is pinned to, so it can
+    # explain a locked picker instead of silently overriding the choice later.
+    path("corpus/<str:username>/", CorpusInfoView.as_view(), name="corpus-info"),
 
 ]
 

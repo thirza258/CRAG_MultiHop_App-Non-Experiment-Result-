@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 
 try:
+    from common.runtime import context as runtime_context
     from sparse_rag import sparse_rag as sparse_rag_module
     from sparse_rag.sparse_rag import SparseRAG
     IMPORT_ERROR = ""
@@ -121,9 +122,11 @@ class TokenizeTests(unittest.TestCase):
             stopwords.words.return_value = ["the", "is", "on", "a", "in"]
             rag, _ = _corpus_rag(remove_stop_words=True)
 
+            self.assertEqual(rag.stop_words, {"the", "is", "on", "a", "in"})
+            self.assertEqual(rag._tokenize("The cat is on a mat"), ["cat", "mat"])
+
+        # Read from NLTK once and cached, however many times it is used.
         stopwords.words.assert_called_once_with("english")
-        self.assertEqual(rag.stop_words, {"the", "is", "on", "a", "in"})
-        self.assertEqual(rag._tokenize("The cat is on a mat"), ["cat", "mat"])
 
     def test_tokenize_keeps_stopwords_when_disabled(self):
         with mock.patch.object(sparse_rag_module, "stopwords") as stopwords:
@@ -166,12 +169,15 @@ class ConstructionTests(unittest.TestCase):
 
     def test_construction_survives_missing_stopword_corpus(self):
         # A missing NLTK corpus must cost stop-word removal, not the whole app.
+        # The list is read on first use rather than in __init__ (a request can
+        # switch removal on that the deployment configured off), so the patch
+        # has to cover the read too.
         with mock.patch.object(sparse_rag_module, "stopwords") as stopwords:
             stopwords.words.side_effect = LookupError("Resource stopwords not found")
             rag, _ = _corpus_rag(remove_stop_words=True)
 
-        self.assertEqual(rag.stop_words, set())
-        self.assertEqual(rag._tokenize("the cat"), ["the", "cat"])
+            self.assertEqual(rag.stop_words, set())
+            self.assertEqual(rag._tokenize("the cat"), ["the", "cat"])
 
 
 @unittest.skipIf(SparseRAG is None, f"sparse_rag unavailable: {IMPORT_ERROR}")
@@ -379,3 +385,108 @@ class EmitterFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _with_params(**params):
+    """Install a request runtime carrying just these pipeline-config values."""
+    return runtime_context.use_runtime(runtime_context.RuntimeSettings(params=params))
+
+
+@unittest.skipIf(SparseRAG is None, f"sparse_rag unavailable: {IMPORT_ERROR}")
+class PerRequestSettingsTests(unittest.TestCase):
+    def test_top_k_follows_the_request(self):
+        rag, _ = _corpus_rag(top_k=5)
+        self.assertEqual(rag.top_k, 5)
+
+        with _with_params(top_k=2):
+            self.assertEqual(rag.top_k, 2)
+
+        # And does not outlive it.
+        self.assertEqual(rag.top_k, 5)
+
+    def test_assigning_top_k_sets_the_configured_default(self):
+        # Assignment is how the old attribute behaved and how tests set it up;
+        # a request still overrides it.
+        rag, _ = _corpus_rag(top_k=5)
+        rag.top_k = 3
+
+        self.assertEqual(rag.top_k, 3)
+        with _with_params(top_k=7):
+            self.assertEqual(rag.top_k, 7)
+
+    def test_stop_word_removal_follows_the_request(self):
+        with mock.patch.object(sparse_rag_module, "stopwords") as stopwords:
+            stopwords.words.return_value = ["the", "is"]
+            rag, _ = _corpus_rag(remove_stop_words=False)
+
+            # Configured off: the NLTK corpus is not read at all.
+            self.assertEqual(rag.stop_words, set())
+            stopwords.words.assert_not_called()
+
+            # A request can still switch it on.
+            with _with_params(remove_stop_words=True):
+                self.assertEqual(rag.stop_words, {"the", "is"})
+                self.assertEqual(rag._tokenize("the cat is here"), ["cat", "here"])
+
+    def test_a_request_can_switch_stop_word_removal_off(self):
+        with mock.patch.object(sparse_rag_module, "stopwords") as stopwords:
+            stopwords.words.return_value = ["the", "is"]
+            rag, _ = _corpus_rag(remove_stop_words=True)
+
+            with _with_params(remove_stop_words=False):
+                self.assertEqual(rag.stop_words, set())
+                self.assertEqual(
+                    rag._tokenize("the cat is here"), ["the", "cat", "is", "here"]
+                )
+
+
+@unittest.skipIf(SparseRAG is None, f"sparse_rag unavailable: {IMPORT_ERROR}")
+class IndexInvalidationTests(unittest.TestCase):
+    """The BM25 index is cached, and both its corpus and its tokenisation can
+    change underneath it."""
+
+    def test_switching_collections_rebuilds_the_index(self):
+        # Regression guard. set_collection never reset _index_loaded, so on a
+        # shared pipeline the first collection queried after startup kept
+        # answering for every later one — including another user's documents.
+        rag, first = _corpus_rag()
+        self.assertTrue(rag._load_index_from_chroma())
+        self.assertEqual(rag.documents, DOCS)
+
+        second = FakeCollection(["completely different text"], [{"src": "other"}])
+        with mock.patch.object(
+            sparse_rag_module, "get_chroma_client", return_value=second
+        ):
+            rag.set_collection("someone_elses_collection")
+
+        self.assertFalse(rag._index_loaded)
+        self.assertEqual(rag.documents, [])
+
+        self.assertTrue(rag._load_index_from_chroma())
+        self.assertEqual(rag.documents, ["completely different text"])
+
+    def test_changing_the_stop_word_setting_rebuilds_the_index(self):
+        # The query is tokenised the same way the corpus was, so a cached index
+        # built under the other setting would be matched against terms it no
+        # longer contains.
+        with mock.patch.object(sparse_rag_module, "stopwords") as stopwords:
+            stopwords.words.return_value = ["the", "is", "on", "a"]
+            rag, _ = _corpus_rag(remove_stop_words=True)
+
+            self.assertTrue(rag._load_index_from_chroma())
+            with_removal = list(rag.tokenized_corpus)
+
+            with _with_params(remove_stop_words=False):
+                self.assertTrue(rag._load_index_from_chroma())
+                without_removal = list(rag.tokenized_corpus)
+
+        self.assertNotEqual(with_removal, without_removal)
+
+    def test_an_unchanged_setting_reuses_the_cached_index(self):
+        rag, collection = _corpus_rag(remove_stop_words=False)
+
+        self.assertTrue(rag._load_index_from_chroma())
+        calls_after_first = len(collection.get_calls)
+
+        self.assertTrue(rag._load_index_from_chroma())
+        self.assertEqual(len(collection.get_calls), calls_after_first)

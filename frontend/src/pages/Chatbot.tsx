@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { generateChatStream } from "../services/websocket";
 import { useSeo } from "../lib/seo";
 import { usePipelineConfig } from "../context/PipelineConfigContext";
+import { useApiKeys } from "../context/ApiKeysContext";
 
 function Chatbot() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -27,11 +28,16 @@ function Chatbot() {
 
   const navigate = useNavigate();
   const { config: pipelineConfig } = usePipelineConfig();
+  const { keysForRequest } = useApiKeys();
 
   // sendMessage runs inside websocket callbacks, so read the live config from a
   // ref rather than closing over the value at render time.
   const configRef = useRef(pipelineConfig);
   configRef.current = pipelineConfig;
+
+  // Same reason, and the keys change independently of the config.
+  const keysRef = useRef(keysForRequest);
+  keysRef.current = keysForRequest;
 
   useSeo({
     title: "Chat with your documents | CRAG MultiHop RAG",
@@ -86,6 +92,9 @@ function Chatbot() {
         documentId: msg.document_id?.toString(),
         context: msg.context || [],
         evaluation: msg.evaluation || null,
+        // Settings the pipeline overrode for this answer, e.g. the embedding
+        // model the searched corpus is actually indexed with.
+        notices: Array.isArray(msg.notices) ? msg.notices : [],
       }]);
       console.log("Final answer received:", msg.answer);
       console.log("Evaluation received:", msg.evaluation);
@@ -103,6 +112,8 @@ function Chatbot() {
     },
     // config
     configRef.current,
+    // keys — a separate top-level field, never folded into config
+    keysRef.current(),
   );
   wsRef.current = ws;
 };
@@ -178,20 +189,26 @@ useEffect(() => {
 
     try {
       const username = localStorage.getItem("username") || "";
+      const settings = {
+        // Only the embedding model matters for indexing, but sending the whole
+        // config keeps one shape on the wire and the backend ignores the rest.
+        config: configRef.current,
+        keys: keysRef.current(),
+      };
 
       let response: ChatResponse;
 
       switch (payload.type) {
         case "file":
-          response = await service.submitFile(payload.file, username);
+          response = await service.submitFile(payload.file, username, settings);
           break;
 
         case "url":
-          response = await service.submitURL(payload.url, username);
+          response = await service.submitURL(payload.url, username, settings);
           break;
 
         case "text":
-          response = await service.submitText(payload.text, username);
+          response = await service.submitText(payload.text, username, settings);
           break;
 
         default:
@@ -243,10 +260,11 @@ useEffect(() => {
             text={msg.text}
             context={msg.context}
             evaluation={msg.evaluation}
+            notices={msg.notices}
           />
         ))}
         {chatLoading && (
-          <div className="flex items-center gap-2 text-slate-400 text-sm px-4 pb-2">
+          <div className="flex items-center gap-2 text-[hsl(var(--muted-foreground))] text-sm px-4 pb-2">
             <span className="animate-pulse">●</span>
             <span>{statusText || "Thinking..."}</span>
           </div>
@@ -259,7 +277,7 @@ useEffect(() => {
         <button
           onClick={() => setIsModalOpen(true)}
           disabled={chatLoading}
-          className="mr-2 px-3 py-2 rounded-lg bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:bg-[hsl(var(--secondary)/0.8)] transition-colors duration-200 disabled:opacity-50"
+          className="mr-2 px-3 py-2 rounded bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:bg-[hsl(var(--secondary)/0.8)] transition-colors duration-200 disabled:opacity-50"
           aria-label="Upload file, URL, or text"
           title="Attach content"
         >
@@ -268,7 +286,7 @@ useEffect(() => {
 
         <input
           type="text"
-          className="flex-grow border border-[hsl(var(--input))] rounded-lg px-4 py-2 mr-4 bg-[hsl(var(--background))] text-[hsl(var(--foreground))]"
+          className="flex-grow border border-[hsl(var(--input))] rounded px-4 py-2 mr-4 bg-[hsl(var(--background))] text-[hsl(var(--foreground))]"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && !chatLoading && sendMessage()}
@@ -276,7 +294,7 @@ useEffect(() => {
           disabled={chatLoading}
         />
         <button
-          className={`px-6 py-2 rounded-lg font-semibold transition-colors duration-200 ${
+          className={`px-6 py-2 rounded font-semibold transition-colors duration-200 ${
             chatLoading
               ? "bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]"
               : "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]"
@@ -290,8 +308,8 @@ useEffect(() => {
 
       {/* Modal overlay */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-[hsl(var(--card))] rounded-lg shadow-xl w-full max-w-md p-6 relative">
+        <div className="fixed inset-0 bg-[hsl(var(--foreground))]/30 flex items-center justify-center z-50">
+          <div className="bg-[hsl(var(--card))] rounded shadow-xl w-full max-w-md p-6 relative">
             <h2 className="text-xl font-semibold mb-4">Attach Content</h2>
             <div className="space-y-4">
               <FileUploadSection
@@ -322,14 +340,14 @@ useEffect(() => {
                   resetModalInputs();
                 }}
                 disabled={modalSubmitting}
-                className="px-4 py-2 rounded-lg bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]"
+                className="px-4 py-2 rounded bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]"
               >
                 Cancel
               </button>
               <button
                 onClick={handleModalSubmit}
                 disabled={modalSubmitting}
-                className="px-4 py-2 rounded-lg bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] font-semibold"
+                className="px-4 py-2 rounded bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] font-semibold"
               >
                 {modalSubmitting ? "Processing..." : "Submit"}
               </button>

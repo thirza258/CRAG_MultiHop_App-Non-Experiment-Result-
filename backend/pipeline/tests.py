@@ -33,12 +33,20 @@ import unittest
 from unittest import mock
 
 try:
+    from ai_handler.openrouter import MissingAPIKeyError
+    from common.runtime import context as runtime_context
+    from common.runtime.errors import UnsupportedConfiguration
+    from common.runtime.config import normalize_pipeline_config
     from pipeline import app_pipeline
     from pipeline.app_pipeline import AppRAGPipeline
     IMPORT_ERROR = ""
 except Exception as exc:  # needs Django settings + chromadb/torch/redis
     app_pipeline = None
     AppRAGPipeline = None
+    runtime_context = None
+    MissingAPIKeyError = None
+    UnsupportedConfiguration = None
+    normalize_pipeline_config = None
     IMPORT_ERROR = str(exc)
 
 
@@ -55,6 +63,7 @@ class MissingUserCollection(Exception):
 # reads outside __init__.
 _CONFIG = {
     "collection_name": "dataset_collection",
+    "dense_config": {"embedding_model": "configured/embed"},
     "hybrid_config": {"retrieval_top_k": 4, "top_k": 4},
     "multi_hop_config": {"max_hops": 3, "top_k": 4},
     "evaluation_llm_model": "judge-model",
@@ -100,6 +109,9 @@ def _bare_pipeline(config=None):
 
     pipeline._build_emitter = mock.Mock(return_value=app_pipeline.NULL_EMITTER)
     pipeline.evaluate = mock.Mock(return_value=(0.91, 0.88))
+    # Queries the database for real; EmbeddingModelPinningTests covers it.
+    # "" means "nothing to pin", which is the pre-existing behaviour.
+    pipeline._collection_embedding_model = mock.Mock(return_value="")
 
     _install_resolver(pipeline, "bob_collection", "user_collection")
     return pipeline
@@ -413,9 +425,65 @@ class EvaluateTests(unittest.TestCase):
             self.assertEqual(self.pipeline.evaluate("q", ["chunk"], "answer"), (0.75, 0.5))
 
         convert_mock.assert_called_once_with(query="q", retrieved_chunks=["chunk"], generated_response="answer")
-        judge_mock.assert_called_once_with(dataset="dataset", llm_judge="judge", judge_embeddings="judge-embeddings")
+        judge_mock.assert_called_once_with(
+            dataset="dataset",
+            llm_judge="judge",
+            judge_embeddings="judge-embeddings",
+            metrics=["answer_relevancy", "faithfulness"],
+        )
+        # The judge stays on the deployment's configured models, not on the one
+        # answering the question — a model scoring its own output is the bias
+        # the separate judge configuration exists to avoid.
         llm_mock.assert_called_once_with("judge-model")
         emb_mock.assert_called_once_with("judge-embedding-model")
+
+    def test_a_request_can_override_the_judge_models(self):
+        scores = _FakeScores({"answer_relevancy": 0.75, "faithfulness": 0.5})
+        convert, judge, llm_wrapper, emb_wrapper = self._patched_judge(judge_result=scores)
+
+        settings = runtime_context.RuntimeSettings(
+            llm_model="answering/model",
+            params={
+                "evaluation_llm_model": "chosen/judge",
+                "evaluation_embedding_model": "chosen/judge-embedder",
+            },
+        )
+        with convert, judge, llm_wrapper as llm_mock, emb_wrapper as emb_mock:
+            with runtime_context.use_runtime(settings):
+                self.pipeline.evaluate("q", ["chunk"], "answer")
+
+        llm_mock.assert_called_once_with("chosen/judge")
+        emb_mock.assert_called_once_with("chosen/judge-embedder")
+
+    def test_a_switched_off_metric_is_not_requested_from_the_judge(self):
+        scores = _FakeScores({"answer_relevancy": 0.75, "faithfulness": 0.5})
+        convert, judge, llm_wrapper, emb_wrapper = self._patched_judge(judge_result=scores)
+
+        settings = runtime_context.RuntimeSettings(
+            params={"eval_answer_relevancy": True, "eval_faithfulness": False}
+        )
+        with convert, judge as judge_mock, llm_wrapper, emb_wrapper:
+            with runtime_context.use_runtime(settings):
+                self.pipeline.evaluate("q", ["chunk"], "answer")
+
+        # Each metric is its own judge pass, so this is a real saving rather
+        # than a hidden number.
+        self.assertEqual(
+            judge_mock.call_args.kwargs["metrics"], ["answer_relevancy"]
+        )
+
+    def test_every_metric_off_asks_the_judge_for_nothing(self):
+        scores = _FakeScores({"answer_relevancy": 0.75, "faithfulness": 0.5})
+        convert, judge, llm_wrapper, emb_wrapper = self._patched_judge(judge_result=scores)
+
+        settings = runtime_context.RuntimeSettings(
+            params={"eval_answer_relevancy": False, "eval_faithfulness": False}
+        )
+        with convert, judge as judge_mock, llm_wrapper, emb_wrapper:
+            with runtime_context.use_runtime(settings):
+                self.pipeline.evaluate("q", ["chunk"], "answer")
+
+        self.assertEqual(judge_mock.call_args.kwargs["metrics"], [])
 
     def test_empty_judge_result_yields_no_scores(self):
         convert, judge, llm_wrapper, emb_wrapper = self._patched_judge(judge_result=_FakeScores(empty=True))
@@ -506,15 +574,23 @@ class HelperTests(unittest.TestCase):
     def test_no_context_result_has_the_full_shape_and_copies_the_degraded_list(self):
         pipeline = _bare_pipeline()
         degraded = ["dense_retrieval"]
+        notices = ["searched with a different embedding model"]
 
-        result = pipeline._no_context_result("dataset_collection", degraded)
+        result = pipeline._no_context_result("dataset_collection", degraded, notices)
         degraded.append("mutated-after-the-fact")
+        notices.append("mutated-after-the-fact")
 
         self.assertEqual(result["answer"], app_pipeline._NO_CONTEXT_ANSWER)
         self.assertEqual(result["source"], "dataset_collection")
         self.assertEqual(result["context"], [])
         self.assertEqual(result["evaluation"], {"answer_relevancy": None, "faithfulness": None})
         self.assertEqual(result["degraded"], ["dense_retrieval"])
+        self.assertEqual(result["notices"], ["searched with a different embedding model"])
+
+    def test_no_context_result_defaults_notices_to_empty(self):
+        # Callers that predate the field must keep working.
+        result = _bare_pipeline()._no_context_result("dataset_collection", [])
+        self.assertEqual(result["notices"], [])
 
 
 @unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
@@ -599,7 +675,10 @@ class RunCoreHealthyTests(unittest.TestCase):
     def test_returns_answer_context_and_scores_with_no_degradations(self):
         result = self.pipeline._run_core("who wrote it?", "bob", 7)
 
-        self.assertEqual(sorted(result), ["answer", "context", "degraded", "evaluation", "source"])
+        self.assertEqual(
+            sorted(result),
+            ["answer", "context", "degraded", "evaluation", "notices", "source"],
+        )
         self.assertEqual(result["degraded"], [])
         self.assertEqual(result["source"], "user_collection")
         self.assertEqual(result["answer"], "generated answer")
@@ -661,17 +740,24 @@ class RunCoreHealthyTests(unittest.TestCase):
     def test_run_forwards_its_arguments_to_run_core_in_the_expected_order(self):
         self.pipeline._run_core = mock.Mock(return_value={"answer": "x"})
 
-        self.pipeline.run("bob", "who wrote it?", 7, {"corpus": "user"})
+        self.pipeline.run(
+            "bob", "who wrote it?", 7, {"corpus": "user"}, {"openrouter": "k"}
+        )
 
-        self.pipeline._run_core.assert_called_once_with("who wrote it?", "bob", 7, {"corpus": "user"})
+        self.pipeline._run_core.assert_called_once_with(
+            "who wrote it?", "bob", 7, {"corpus": "user"}, {"openrouter": "k"}
+        )
 
-    def test_run_works_without_a_conversation_id_or_config(self):
-        # The REST endpoint has no conversation to stream to at call time.
+    def test_run_works_without_a_conversation_id_config_or_keys(self):
+        # The REST endpoint has no conversation to stream to at call time, and a
+        # caller that brought no key of its own falls back to the server's.
         self.pipeline._run_core = mock.Mock(return_value={"answer": "x"})
 
         self.pipeline.run("bob", "who wrote it?")
 
-        self.pipeline._run_core.assert_called_once_with("who wrote it?", "bob", None, None)
+        self.pipeline._run_core.assert_called_once_with(
+            "who wrote it?", "bob", None, None, None
+        )
 
 
 @unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
@@ -700,29 +786,38 @@ class RunCoreChainSelectionTests(unittest.TestCase):
         self.pipeline.dense_multi_hop.retrieve.assert_called_once_with("q")
         self.pipeline.dense_corrective_rag.retrieve.assert_not_called()
         self.pipeline.dense_rag.retrieve.assert_not_called()
-        self.pipeline.dense_multi_hop.set_max_hops.assert_called_once_with(3)
         self.assertEqual(result["degraded"], [])
 
-    def test_max_hops_is_applied_per_query(self):
+    def test_the_hop_ceiling_is_never_written_onto_the_shared_chain(self):
+        """The pipeline is one instance shared by every concurrent query.
+
+        Assigning the ceiling onto the chain per query meant two requests
+        asking for different hop counts raced, and whichever wrote last set the
+        ceiling for both. MultiHopRetriever reads it from the request context
+        instead, so the pipeline must not touch the setter at all.
+        """
         self._run({"max_hops": 2})
 
-        self.pipeline.dense_multi_hop.set_max_hops.assert_called_once_with(2)
-        self.pipeline.sparse_multi_hop.set_max_hops.assert_called_once_with(2)
+        self.pipeline.dense_multi_hop.set_max_hops.assert_not_called()
+        self.pipeline.sparse_multi_hop.set_max_hops.assert_not_called()
 
-    def test_a_chain_that_cannot_take_the_hop_ceiling_still_retrieves(self):
-        self.pipeline.dense_multi_hop.set_max_hops.side_effect = RuntimeError("old retriever")
+    def test_max_hops_reaches_the_chain_through_the_request_context(self):
+        seen = {}
+        self.pipeline.dense_multi_hop.retrieve.side_effect = (
+            lambda *a, **k: (seen.setdefault(
+                "max_hops", runtime_context.resolve_param("max_hops", 3)
+            ), ([], []))[1]
+        )
 
-        result = self._run(None)
+        self._run({"max_hops": 2})
 
-        self.pipeline.dense_multi_hop.retrieve.assert_called_once_with("q")
-        self.assertEqual(result["degraded"], [])
+        self.assertEqual(seen["max_hops"], 2)
 
     def test_multi_hop_off_queries_the_corrective_chain(self):
         result = self._run({"use_multi_hop": False})
 
         self.pipeline.dense_corrective_rag.retrieve.assert_called_once_with("q")
         self.pipeline.dense_multi_hop.retrieve.assert_not_called()
-        self.pipeline.dense_corrective_rag.set_max_hops.assert_not_called()
         self.assertEqual(result["degraded"], [])
 
     def test_both_stages_off_queries_the_base_retriever(self):
@@ -731,9 +826,6 @@ class RunCoreChainSelectionTests(unittest.TestCase):
         self.pipeline.dense_rag.retrieve.assert_called_once_with("q")
         self.pipeline.dense_corrective_rag.retrieve.assert_not_called()
         self.pipeline.dense_multi_hop.retrieve.assert_not_called()
-        # DenseRAG has no set_max_hops; the hop ceiling must stay behind the
-        # use_multi_hop guard rather than being aimed at a base retriever.
-        self.pipeline.dense_rag.set_max_hops.assert_not_called()
         self.assertEqual(result["degraded"], [])
 
     def test_corrective_off_builds_a_multi_hop_chain_over_the_base_retriever(self):
@@ -1051,6 +1143,484 @@ class RunCoreStatusChannelTests(unittest.TestCase):
         # "result"/"error" are terminal for the websocket consumer.
         self.assertNotIn("result", stages)
         self.assertNotIn("error", stages)
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class EvaluationToggleTests(unittest.TestCase):
+    """Answer scoring is two LLM-judge passes plus an embedding call.
+
+    Switching it off has to actually skip them — and must not be reported as a
+    degradation, because nothing failed.
+    """
+
+    def setUp(self):
+        self.pipeline = _bare_pipeline()
+        self.pipeline.dense_multi_hop.retrieve.return_value = (["d1"], [{"src": "d1"}])
+        self.pipeline.sparse_multi_hop.retrieve.return_value = (["s1"], [{"src": "s1"}])
+        self.pipeline.hybrid_rag.retrieve_from_precomputed.return_value = (
+            ["d1"], [{"src": "d1"}], "ok",
+        )
+
+    def test_evaluation_runs_by_default(self):
+        result = self.pipeline._run_core("q", "bob", 7)
+
+        self.pipeline.evaluate.assert_called_once()
+        self.assertEqual(
+            result["evaluation"], {"answer_relevancy": 0.91, "faithfulness": 0.88}
+        )
+
+    def test_switching_it_off_skips_the_judge_entirely(self):
+        result = self.pipeline._run_core("q", "bob", 7, config={"use_evaluation": False})
+
+        self.pipeline.evaluate.assert_not_called()
+        self.assertEqual(
+            result["evaluation"], {"answer_relevancy": None, "faithfulness": None}
+        )
+
+    def test_switching_it_off_is_not_a_degradation(self):
+        # Nothing failed — the user gave the scores up on purpose.
+        result = self.pipeline._run_core("q", "bob", 7, config={"use_evaluation": False})
+        self.assertEqual(result["degraded"], [])
+
+    def test_the_answer_is_unaffected(self):
+        result = self.pipeline._run_core("q", "bob", 7, config={"use_evaluation": False})
+        self.assertEqual(result["answer"], "generated answer")
+        self.assertEqual([entry["text"] for entry in result["context"]], ["d1"])
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class CollectionEmbeddingModelTests(unittest.TestCase):
+    """Which embedding model a collection's vectors actually came from.
+
+    This is the lookup that stops a user's embedding-model choice from being
+    applied to a collection built by a different model — a comparison across
+    vector spaces, which ChromaDB either rejects outright or answers with
+    confident nonsense.
+    """
+
+    def setUp(self):
+        self.pipeline = _bare_pipeline()
+        del self.pipeline._collection_embedding_model  # exercise the real method
+
+    def test_a_user_collection_with_chunks_reports_its_recorded_model(self):
+        record = mock.Mock(chunk_count=12, embedding_model="recorded/model")
+        user_col = mock.Mock()
+        user_col.objects.filter.return_value.first.return_value = record
+
+        with mock.patch.object(app_pipeline, "UserCollection", user_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("user_bob_collection", "user_collection"),
+                "recorded/model",
+            )
+
+    def test_an_empty_user_collection_is_not_pinned(self):
+        # Nothing has been embedded into it yet, so the user's choice still
+        # governs — the first document they index decides.
+        record = mock.Mock(chunk_count=0, embedding_model="recorded/model")
+        user_col = mock.Mock()
+        user_col.objects.filter.return_value.first.return_value = record
+
+        with mock.patch.object(app_pipeline, "UserCollection", user_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("user_bob_collection", "user_collection"),
+                "",
+            )
+
+    def test_a_missing_user_collection_record_is_not_pinned(self):
+        user_col = mock.Mock()
+        user_col.objects.filter.return_value.first.return_value = None
+
+        with mock.patch.object(app_pipeline, "UserCollection", user_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("user_bob_collection", "user_collection"),
+                "",
+            )
+
+    def test_the_shared_corpus_uses_its_bookkeeping_row(self):
+        chroma_col = mock.Mock()
+        chroma_col.objects.filter.return_value.first.return_value = mock.Mock(
+            embedding_model="corpus/model"
+        )
+
+        with mock.patch.object(app_pipeline, "ChromaCollection", chroma_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("dataset_collection", "dataset_collection"),
+                "corpus/model",
+            )
+
+    def test_the_shared_corpus_falls_back_to_the_configured_model(self):
+        # A corpus indexed before per-collection recording existed: it was built
+        # by this deployment's own dense_config, so that is what is in it.
+        chroma_col = mock.Mock()
+        chroma_col.objects.filter.return_value.first.return_value = None
+
+        with mock.patch.object(app_pipeline, "ChromaCollection", chroma_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("dataset_collection", "dataset_collection"),
+                "configured/embed",
+            )
+
+    def test_a_database_failure_is_not_pinned_rather_than_raising(self):
+        # This runs on the hot path of every query; a bookkeeping lookup must
+        # never be the reason a question goes unanswered.
+        user_col = mock.Mock()
+        user_col.objects.filter.side_effect = RuntimeError("database is down")
+
+        with mock.patch.object(app_pipeline, "UserCollection", user_col):
+            self.assertEqual(
+                self.pipeline._collection_embedding_model("user_bob_collection", "user_collection"),
+                "",
+            )
+
+    def test_an_empty_collection_name_is_not_pinned(self):
+        self.assertEqual(self.pipeline._collection_embedding_model("", "user_collection"), "")
+
+    def test_configured_embedding_model_survives_a_broken_config(self):
+        for config in ({}, {"dense_config": None}, {"dense_config": "nonsense"}):
+            with self.subTest(config=config):
+                pipeline = _bare_pipeline(config)
+                self.assertEqual(pipeline._configured_embedding_model(), "")
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class RunCoreRuntimeTests(unittest.TestCase):
+    """The per-query model choice and credentials, as seen from inside a stage.
+
+    The pipeline is a process-wide singleton, so these cannot be written onto
+    it. They are installed as a request-scoped runtime for the duration of the
+    query and read at call time by whichever stage needs them.
+    """
+
+    def setUp(self):
+        self.pipeline = _bare_pipeline()
+        self.pipeline.dense_multi_hop.retrieve.return_value = (["d1"], [{"src": "d1"}])
+        self.pipeline.sparse_multi_hop.retrieve.return_value = (["s1"], [{"src": "s1"}])
+        self.pipeline.hybrid_rag.retrieve_from_precomputed.return_value = (
+            ["d1"], [{"src": "d1"}], "ok",
+        )
+
+        # Answer generation is the last stage to run, so what it observes is
+        # what the whole query saw.
+        self.observed = {}
+
+        # _generate_answer passes the request's temperature as a keyword.
+        def record(_prompt, temperature=None):
+            self.observed["temperature"] = temperature
+            self.observed["llm_model"] = runtime_context.resolve_llm_model("stage-default")
+            self.observed["embedding_model"] = runtime_context.resolve_embedding_model("stage-default")
+            self.observed["openrouter_key"] = runtime_context.openrouter_api_key()
+            self.observed["news_key"] = runtime_context.news_api_key()
+            # What every other component resolves its own knobs through.
+            self.observed["top_k"] = runtime_context.resolve_param("top_k", 4)
+            self.observed["use_wikipedia"] = runtime_context.resolve_param("use_wikipedia", True)
+            self.observed["strictness"] = runtime_context.resolve_param("corrective_strictness", "")
+            return "generated answer"
+
+        self.pipeline.llm_client._call_api.side_effect = record
+
+    def test_the_chosen_model_reaches_the_stages(self):
+        self.pipeline._run_core(
+            "q", "bob", 7, config={"llm_model": "vendor/chosen"},
+        )
+        self.assertEqual(self.observed["llm_model"], "vendor/chosen")
+
+    def test_no_choice_leaves_each_stage_on_its_own_configured_model(self):
+        self.pipeline._run_core("q", "bob", 7)
+        self.assertEqual(self.observed["llm_model"], "stage-default")
+
+    def test_the_callers_keys_reach_the_stages(self):
+        self.pipeline._run_core(
+            "q", "bob", 7, keys={"openrouter": "caller-or-key", "news": "caller-news-key"},
+        )
+        self.assertEqual(self.observed["openrouter_key"], "caller-or-key")
+        self.assertEqual(self.observed["news_key"], "caller-news-key")
+
+    def test_a_malformed_keys_block_falls_back_instead_of_failing_the_query(self):
+        for junk in ("string", 42, [], {"openrouter": "has a space"}):
+            with self.subTest(junk=junk):
+                result = self.pipeline._run_core("q", "bob", 7, keys=junk)
+                self.assertEqual(result["answer"], "generated answer")
+
+    def test_pipeline_config_values_reach_the_stages(self):
+        # The whole chain end to end: CONFIG -> normalise -> RuntimeSettings.params
+        # -> resolve_param inside a stage. Every knob other than the models and
+        # the keys travels this way, so one case covers the mechanism.
+        self.pipeline._run_core(
+            "q", "bob", 7,
+            config={
+                "top_k": 9,
+                "use_wikipedia": False,
+                "corrective_strictness": "strict",
+            },
+        )
+
+        self.assertEqual(self.observed["top_k"], 9)
+        self.assertFalse(self.observed["use_wikipedia"])
+        self.assertEqual(self.observed["strictness"], "strict")
+
+    def test_unset_knobs_fall_through_to_each_components_own_default(self):
+        # The sentinels: null for a number, "" for a name. Neither may be
+        # mistaken for a real value, or every deployment's tuning is overridden.
+        self.pipeline._run_core("q", "bob", 7)
+
+        self.assertEqual(self.observed["top_k"], 4)
+        self.assertTrue(self.observed["use_wikipedia"])
+        self.assertEqual(self.observed["strictness"], "")
+
+    def test_the_requests_temperature_reaches_answer_generation(self):
+        self.pipeline._run_core("q", "bob", 7, config={"temperature": 0.8})
+        self.assertEqual(self.observed["temperature"], 0.8)
+
+    def test_an_unset_temperature_leaves_the_client_on_its_own(self):
+        self.pipeline._run_core("q", "bob", 7)
+        self.assertIsNone(self.observed["temperature"])
+
+    def test_the_params_do_not_outlive_the_query(self):
+        self.pipeline._run_core("q", "bob", 7, config={"top_k": 9})
+        self.assertEqual(runtime_context.resolve_param("top_k", 4), 4)
+
+    def test_the_runtime_does_not_outlive_the_query(self):
+        # The REST path runs on a pooled thread: a leaked runtime would hand the
+        # next request served by that thread this caller's key.
+        self.pipeline._run_core(
+            "q", "bob", 7,
+            config={"llm_model": "vendor/chosen"},
+            keys={"openrouter": "caller-or-key"},
+        )
+        self.assertEqual(runtime_context.current_runtime(), runtime_context.EMPTY_RUNTIME)
+        self.assertEqual(runtime_context.resolve_llm_model("stage-default"), "stage-default")
+
+    def test_the_runtime_is_reset_even_when_a_stage_raises(self):
+        self.pipeline.llm_client._call_api.side_effect = RuntimeError("llm down")
+
+        self.pipeline._run_core("q", "bob", 7, keys={"openrouter": "caller-or-key"})
+
+        self.assertEqual(runtime_context.current_runtime(), runtime_context.EMPTY_RUNTIME)
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class EmbeddingModelPinningTests(unittest.TestCase):
+    """The collection's embedding model overrides the user's pick, out loud.
+
+    Silently ignoring a setting is what makes a settings panel untrustworthy, so
+    the override is reported in the result's ``notices``.
+    """
+
+    def setUp(self):
+        self.pipeline = _bare_pipeline()
+        self.pipeline.dense_multi_hop.retrieve.return_value = (["d1"], [{"src": "d1"}])
+        self.pipeline.sparse_multi_hop.retrieve.return_value = (["s1"], [{"src": "s1"}])
+        self.pipeline.hybrid_rag.retrieve_from_precomputed.return_value = (
+            ["d1"], [{"src": "d1"}], "ok",
+        )
+        self.pipeline._collection_embedding_model = mock.Mock(return_value="collection/actual")
+
+        self.observed = {}
+
+        def record(_prompt, temperature=None):
+            self.observed["embedding_model"] = runtime_context.resolve_embedding_model("stage-default")
+            return "generated answer"
+
+        self.pipeline.llm_client._call_api.side_effect = record
+
+    def test_the_collections_model_is_what_the_stages_use(self):
+        self.pipeline._run_core("q", "bob", 7, config={"embedding_model": "user/choice"})
+        self.assertEqual(self.observed["embedding_model"], "collection/actual")
+
+    def test_the_override_is_reported_to_the_caller(self):
+        result = self.pipeline._run_core("q", "bob", 7, config={"embedding_model": "user/choice"})
+
+        self.assertEqual(len(result["notices"]), 1)
+        notice = result["notices"][0]
+        self.assertIn("collection/actual", notice)
+        self.assertIn("user/choice", notice)
+
+    def test_an_override_is_not_a_degradation(self):
+        # Nothing failed — the pipeline ran exactly as designed.
+        result = self.pipeline._run_core("q", "bob", 7, config={"embedding_model": "user/choice"})
+        self.assertEqual(result["degraded"], [])
+
+    def test_no_notice_when_the_choice_already_matches(self):
+        result = self.pipeline._run_core(
+            "q", "bob", 7, config={"embedding_model": "collection/actual"}
+        )
+        self.assertEqual(result["notices"], [])
+
+    def test_no_notice_when_the_user_chose_nothing(self):
+        # The pin still happens; there is just nothing to tell them about.
+        result = self.pipeline._run_core("q", "bob", 7)
+        self.assertEqual(result["notices"], [])
+        self.assertEqual(self.observed["embedding_model"], "collection/actual")
+
+    def test_an_unpinnable_collection_leaves_the_choice_in_place(self):
+        self.pipeline._collection_embedding_model = mock.Mock(return_value="")
+
+        result = self.pipeline._run_core("q", "bob", 7, config={"embedding_model": "user/choice"})
+
+        self.assertEqual(self.observed["embedding_model"], "user/choice")
+        self.assertEqual(result["notices"], [])
+
+    def test_the_notice_survives_an_empty_retrieval(self):
+        # _no_context_result is a separate exit path and used to drop it.
+        self.pipeline.dense_multi_hop.retrieve.return_value = ([], [])
+        self.pipeline.sparse_multi_hop.retrieve.return_value = ([], [])
+
+        result = self.pipeline._run_core("q", "bob", 7, config={"embedding_model": "user/choice"})
+
+        self.assertEqual(result["context"], [])
+        self.assertEqual(len(result["notices"]), 1)
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class IndexEmbeddingModelTests(unittest.TestCase):
+    """Which model a document gets indexed with.
+
+    One ChromaDB collection is one vector space, so the first document a user
+    indexes fixes the model for every later one. A newer pick can only be
+    honoured while the collection is still empty.
+    """
+
+    def setUp(self):
+        self.pipeline = _bare_pipeline()
+
+    def test_an_empty_collection_adopts_the_users_choice(self):
+        collection = mock.Mock(chunk_count=0, embedding_model="", collection_name="user_bob_collection")
+
+        with runtime_context.use_runtime(
+            runtime_context.RuntimeSettings(embedding_model="user/choice")
+        ):
+            self.assertEqual(self.pipeline._index_embedding_model(collection), "user/choice")
+
+    def test_a_populated_collection_stays_locked_to_its_recorded_model(self):
+        collection = mock.Mock(chunk_count=42, embedding_model="locked/model", collection_name="user_bob_collection")
+
+        with runtime_context.use_runtime(
+            runtime_context.RuntimeSettings(embedding_model="user/choice")
+        ):
+            self.assertEqual(self.pipeline._index_embedding_model(collection), "locked/model")
+
+    def test_no_choice_falls_back_to_the_configured_model(self):
+        collection = mock.Mock(chunk_count=0, embedding_model="", collection_name="user_bob_collection")
+        self.assertEqual(self.pipeline._index_embedding_model(collection), "configured/embed")
+
+    def test_a_collection_with_chunks_but_no_recorded_model_is_not_locked(self):
+        # Nothing to lock to; the choice (or the configured default) applies.
+        collection = mock.Mock(chunk_count=5, embedding_model="", collection_name="user_bob_collection")
+
+        with runtime_context.use_runtime(
+            runtime_context.RuntimeSettings(embedding_model="user/choice")
+        ):
+            self.assertEqual(self.pipeline._index_embedding_model(collection), "user/choice")
+
+
+@unittest.skipIf(AppRAGPipeline is None, f"app_pipeline unavailable: {IMPORT_ERROR}")
+class ChunkerForRequestTests(unittest.TestCase):
+    """Which chunker an upload gets, and what happens when it cannot have it.
+
+    The asymmetry under test: a setting the request left alone falls back
+    silently, because the user never asked for the thing that is unavailable.
+    A setting the request named cannot fall back silently, because the document
+    would be stored under a split nobody chose and nothing afterwards can tell.
+    """
+
+    def setUp(self):
+        from common.chunker import DocumentChunker
+
+        self.DocumentChunker = DocumentChunker
+        self.pipeline = object.__new__(AppRAGPipeline)
+        self.pipeline.config = dict(_CONFIG)
+        self.pipeline.chunker = DocumentChunker(
+            strategy="recursive", chunk_size=500, overlap=50
+        )
+        self.pipeline.dense_rag = mock.Mock()
+        self.pipeline.dense_rag.client = mock.Mock()
+
+    def _chunker(self, **params):
+        with runtime_context.use_runtime(
+            runtime_context.RuntimeSettings(params=normalize_pipeline_config(params))
+        ):
+            return self.pipeline._chunker_for_request("openai/text-embedding-3-small")
+
+    def _keyless(self):
+        """A dense_rag whose client property raises, as it does with no API key."""
+        broken = mock.Mock()
+        type(broken).client = mock.PropertyMock(
+            side_effect=MissingAPIKeyError("no OpenRouter key")
+        )
+        self.pipeline.dense_rag = broken
+
+    def test_an_untouched_request_reuses_the_shared_chunker(self):
+        # Identity, not equality: the common path must not allocate.
+        self.assertIs(self._chunker(), self.pipeline.chunker)
+
+    def test_a_chosen_size_and_overlap_are_applied(self):
+        chunker = self._chunker(chunk_size=1200, chunk_overlap=120)
+
+        self.assertEqual((chunker.chunk_size, chunker.overlap), (1200, 120))
+        self.assertIsNot(chunker, self.pipeline.chunker)
+
+    def test_a_chosen_strategy_is_applied(self):
+        self.assertEqual(self._chunker(chunk_strategy="paragraph").strategy, "paragraph")
+
+    def test_semantic_is_given_the_embedding_client(self):
+        chunker = self._chunker(chunk_strategy="semantic")
+
+        self.assertEqual(chunker.strategy, "semantic")
+        self.assertIs(chunker.client, self.pipeline.dense_rag.client)
+
+    def test_the_index_embedding_model_is_passed_through(self):
+        # Whatever model _build_index pinned for this collection is the one the
+        # semantic splitter embeds sentences with.
+        with runtime_context.use_runtime(runtime_context.RuntimeSettings(
+            params=normalize_pipeline_config({"chunk_size": 800})
+        )):
+            chunker = self.pipeline._chunker_for_request("baai/bge-m3")
+
+        self.assertEqual(chunker.embedding_model, "baai/bge-m3")
+
+    def test_no_index_model_leaves_the_chunkers_own_default(self):
+        with runtime_context.use_runtime(runtime_context.RuntimeSettings(
+            params=normalize_pipeline_config({"chunk_size": 800})
+        )):
+            chunker = self.pipeline._chunker_for_request("")
+
+        self.assertEqual(
+            chunker.embedding_model, self.pipeline.chunker.embedding_model
+        )
+
+    def test_semantic_without_a_key_is_refused_rather_than_downgraded(self):
+        """The regression this class exists for.
+
+        Falling back to `recursive` here indexed the document a different way
+        and reported success. The upload path has no notices channel, so the
+        only honest signal left is failing.
+        """
+        self._keyless()
+
+        with self.assertRaises(UnsupportedConfiguration) as caught:
+            self._chunker(chunk_strategy="semantic")
+
+        self.assertIn("Semantic chunking", str(caught.exception))
+
+    def test_a_deployment_defaulting_to_semantic_still_falls_back(self):
+        # Nothing was *asked* for, so there is nobody to tell and no choice to
+        # betray — the upload should succeed with the recursive splitter.
+        self._keyless()
+        self.pipeline.chunker = self.DocumentChunker(strategy="semantic")
+
+        chunker = self._chunker()
+
+        self.assertIs(chunker, self.pipeline.chunker)
+
+    def test_an_unparseable_size_falls_back_instead_of_failing(self):
+        # normalize_pipeline_config never produces this; a hand-built params
+        # dict from an older stash could.
+        with runtime_context.use_runtime(
+            runtime_context.RuntimeSettings(params={"chunk_size": "wide"})
+        ):
+            chunker = self.pipeline._chunker_for_request("")
+
+        self.assertIs(chunker, self.pipeline.chunker)
 
 
 if __name__ == "__main__":

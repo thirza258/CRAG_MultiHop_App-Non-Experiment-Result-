@@ -13,7 +13,7 @@ from unittest import mock
 
 try:
     from router import consumers
-    from common.pipeline_config import DEFAULT_PIPELINE_CONFIG
+    from common.runtime.config import DEFAULT_PIPELINE_CONFIG
     IMPORT_ERROR = ""
 except Exception as exc:  # needs Django settings + channels + redis
     consumers = None
