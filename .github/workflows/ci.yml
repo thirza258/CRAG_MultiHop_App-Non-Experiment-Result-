@@ -93,6 +93,10 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Test chat connection lifecycle
+        working-directory: frontend
+        run: npm test
+
       # Non-blocking: the repo has pre-existing lint errors that predate CI.
       # Drop continue-on-error once they are cleaned up so lint becomes a gate.
       - name: Lint

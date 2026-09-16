@@ -231,6 +231,19 @@ class GetEmbeddingsTests(unittest.TestCase):
 
         self.assertEqual(self.rag._get_embeddings(["a", "b"], batch_size=1), [])
 
+    def test_indexing_preserves_provider_error_instead_of_returning_partial_vectors(self):
+        error = ConnectionError("embedding provider unavailable")
+        self.client.embeddings.create.side_effect = [_embedding_response([[0.1]]), error]
+        with self.assertRaises(ConnectionError) as caught:
+            self.rag._get_embeddings(["a", "b"], batch_size=1, fail_on_error=True)
+        self.assertIs(caught.exception, error)
+
+    def test_indexing_reports_missing_api_key(self):
+        with mock.patch.object(dense_rag_module, "openrouter_client",
+                               side_effect=dense_rag_module.MissingAPIKeyError("Add an API key")):
+            with self.assertRaises(dense_rag_module.MissingAPIKeyError):
+                self.rag._get_embeddings(["document"], fail_on_error=True)
+
     def test_returns_empty_when_the_response_carries_no_data(self):
         self.client.embeddings.create.return_value = _embedding_response([])
 

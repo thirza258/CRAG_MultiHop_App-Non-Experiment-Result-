@@ -15,8 +15,8 @@ class DocumentChunker:
                  embedding_client=None,
                  embedding_model: str = "openai/text-embedding-3-small"):
         self.strategy = strategy
-        self.chunk_size = chunk_size
-        self.overlap = overlap
+        self.chunk_size = max(1, int(chunk_size))
+        self.overlap = max(0, min(int(overlap), self.chunk_size - 1))
         self.client = embedding_client
         # Only the "semantic" strategy uses this, and only to find split points
         # — those vectors are thrown away, never stored. So unlike the model a

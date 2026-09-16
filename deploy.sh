@@ -87,7 +87,8 @@ info "First run can take a while — it downloads ~2 GB of models. Follow along:
 
 elapsed=0
 while true; do
-    status="$(docker inspect -f '{{.State.Health.Status}}' rag_backend 2>/dev/null || echo starting)"
+    backend_id="$(docker compose ps -q backend)"
+    status="$(docker inspect -f '{{.State.Health.Status}}' "$backend_id" 2>/dev/null || echo starting)"
     if [ "$status" = "healthy" ]; then
         break
     fi

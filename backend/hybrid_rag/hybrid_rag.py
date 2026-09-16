@@ -7,12 +7,14 @@ import numpy as np
 from sentence_transformers import CrossEncoder
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, AutoModel, AutoModelForCausalLM
 import json
+import threading
 from common.memory import _local_model_path
 from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
 from collections import defaultdict
 
 _RERANKER_CACHE: Dict[str, Any] = {}
+_RERANKER_LOCK = threading.Lock()
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,19 +48,10 @@ class HybridRAG:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info(f"Reranker device: {self.device} | CUDA available: {torch.cuda.is_available()}")
-        logger.info(f"Loading reranker model: {self.reranker_model_name!r}")
-        try:
-            self._load_reranker()
-        except Exception as exc:
-            # A missing or corrupt local reranker snapshot must not make the whole
-            # RAG pipeline unconstructible — retrieval still works, it just keeps
-            # the merged candidate order instead of a reranked one.
-            self._model = None
-            logger.warning(
-                f"[HybridRAG] Reranker {self.reranker_model_name!r} could not be loaded ({exc}) — "
-                f"continuing without reranking",
-                exc_info=True,
-            )
+        self._model = None
+        # Request-scoped copies share this state and the model cache. Uploads
+        # and requests with reranking disabled never load/download the model.
+        self._reranker_state = {"attempted": False, "model": None}
 
     @property
     def top_k(self) -> int:
@@ -84,6 +77,24 @@ class HybridRAG:
     @final_top_k.setter
     def final_top_k(self, value) -> None:
         self._configured_final_top_k = value
+
+    def _ensure_reranker(self) -> None:
+        state = getattr(self, "_reranker_state", None)
+        if state is None:
+            return
+        with _RERANKER_LOCK:
+            if not state["attempted"]:
+                try:
+                    self._load_reranker()
+                    state["model"] = self._model
+                except Exception as exc:
+                    logger.warning(
+                        "Reranker %r could not be loaded (%s); keeping retrieval order",
+                        self.reranker_model_name, exc, exc_info=True,
+                    )
+                finally:
+                    state["attempted"] = True
+            self._model = state["model"]
 
     def _load_reranker(self) -> None:
         cache_key = self.reranker_model_name
@@ -322,8 +333,9 @@ class HybridRAG:
     def _rerank(self, query: str, candidates: List[str]) -> tuple[List[int], str]:
         if not candidates:
             return [], "ok"
-        # Construction is allowed to succeed without a reranker (see __init__), so a
-        # missing model is an expected state here — never worth retrying the load.
+        if getattr(self, "_model", None) is None:
+            self._ensure_reranker()
+        # A failed optional model load still permits retrieval in merge order.
         if getattr(self, "_model", None) is None:
             logger.warning("[HybridRAG] Reranker model unavailable — keeping original candidate order")
             return list(range(len(candidates))), "ok (reranking skipped: reranker unavailable)"

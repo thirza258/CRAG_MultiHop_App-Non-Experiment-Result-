@@ -35,7 +35,7 @@ class NormalizeDefaultsTests(unittest.TestCase):
         # schema's own number. MAX_HOPS is the ceiling, not the default.
         self.assertIsNone(pc.DEFAULT_PIPELINE_CONFIG["max_hops"])
         self.assertEqual(pc.DEFAULT_PIPELINE_CONFIG["retrievers"], "both")
-        self.assertEqual(pc.DEFAULT_PIPELINE_CONFIG["corpus"], "auto")
+        self.assertEqual(pc.DEFAULT_PIPELINE_CONFIG["corpus"], "user")
 
     def test_result_is_a_copy_not_the_shared_default(self):
         result = pc.normalize_pipeline_config(None)
@@ -181,7 +181,7 @@ class ChoiceFieldTests(unittest.TestCase):
             "both",
         )
         self.assertEqual(
-            pc.normalize_pipeline_config({"corpus": "everything"})["corpus"], "auto"
+            pc.normalize_pipeline_config({"corpus": "everything"})["corpus"], "user"
         )
 
     def test_at_least_one_retriever_is_always_selected(self):
@@ -372,13 +372,13 @@ class NewStageToggleTests(unittest.TestCase):
         "eval_answer_relevancy", "eval_faithfulness",
     )
 
-    def test_every_new_toggle_defaults_on(self):
+    def test_only_external_search_defaults_off(self):
         # On is the historic behaviour, so a client that knows nothing about
         # these gets exactly the pipeline it had before they existed.
         config = pc.normalize_pipeline_config(None)
         for field in self.NEW_TOGGLES:
             with self.subTest(field=field):
-                self.assertTrue(config[field])
+                self.assertEqual(config[field], field != "use_external_search")
 
     def test_each_can_be_switched_off_independently(self):
         for field in self.NEW_TOGGLES:
@@ -386,12 +386,12 @@ class NewStageToggleTests(unittest.TestCase):
                 config = pc.normalize_pipeline_config({field: False})
                 self.assertFalse(config[field])
                 others = [f for f in self.NEW_TOGGLES if f != field]
-                self.assertTrue(all(config[other] for other in others))
+                self.assertTrue(all(config[other] == pc.DEFAULT_PIPELINE_CONFIG[other] for other in others))
 
-    def test_switching_one_off_is_not_the_default_pipeline(self):
+    def test_switching_a_toggle_changes_the_pipeline(self):
         for field in self.NEW_TOGGLES:
             with self.subTest(field=field):
-                self.assertFalse(pc.is_default({field: False}))
+                self.assertFalse(pc.is_default({field: not pc.DEFAULT_PIPELINE_CONFIG[field]}))
 
 
 @unittest.skipIf(pc is None, f"common.runtime.config unavailable: {IMPORT_ERROR}")

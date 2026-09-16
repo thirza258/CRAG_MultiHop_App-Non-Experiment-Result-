@@ -68,7 +68,8 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({
                 {context.map((ctx, idx) => (
                   <div key={idx} className="border-l-2 border-[hsl(var(--border))] pl-3">
                     <div className="font-mono text-[11px] text-[hsl(var(--muted-foreground))]">
-                      chunk {ctx.metadata.chunk_index} · {ctx.metadata.username}
+                      {ctx.metadata?.title || ctx.metadata?.url || ctx.metadata?.username || "Source"}
+                      {ctx.metadata?.chunk_index !== undefined && ` · chunk ${ctx.metadata.chunk_index + 1}`}
                     </div>
                     <p className="mt-1 line-clamp-3 text-[hsl(var(--muted-foreground))]">
                       {ctx.text.length > 200

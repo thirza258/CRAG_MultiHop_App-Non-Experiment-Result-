@@ -95,7 +95,7 @@ class DownloadModelTests(unittest.TestCase):
         self.assertFalse((self._local_dir() / dl.COMPLETE_MARKER).exists())
 
     def test_download_models_reports_partial_failure(self):
-        def fake_snapshot(repo_id, local_dir):
+        def fake_snapshot(repo_id, local_dir, **kwargs):
             if repo_id == "bad/model":
                 raise OSError("network")
 

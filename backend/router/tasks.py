@@ -1,11 +1,17 @@
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
-from .models import DocumentChunk, Document
+from openai import AuthenticationError, BadRequestError, NotFoundError, PermissionDeniedError, UnprocessableEntityError
+from ai_handler.openrouter import MissingAPIKeyError
+from .models import Document
 from common.runtime.errors import UnsupportedConfiguration
 from common.runtime.context import use_runtime
 from common.runtime.handoff import load_runtime
 from rag.rag_service import get_registry
 from django.db import transaction
+from django.conf import settings
+from django.utils import timezone
+from datetime import timedelta
+from common.runtime.api_keys import scrub
 
 import logging
 
@@ -24,13 +30,13 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
     ``runtime_token`` points at the embedding model and API keys the uploading
     request chose (see :mod:`common.runtime.handoff`). It is a token rather than
     the values themselves because task arguments are persisted in the broker and
-    logged on failure. A missing or expired token means the worker's own
-    configuration applies, which is what indexing always did before users could
-    bring their own keys.
+    logged on failure. An absent token uses the server configuration; an
+    expired issued token fails explicitly so the user can retry the upload.
 
     The token is deliberately not discarded on success: Celery can redeliver an
     acks_late task, and the entry expires on its own.
     """
+    runtime = None
     try:
 
         with transaction.atomic():
@@ -38,7 +44,7 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
             document = (
                 Document.objects
                 .select_for_update()
-                .get(pk=document_id)
+                .get(pk=document_id, user__username=username)
             )
 
             # Prevent duplicate execution
@@ -48,39 +54,32 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
                 )
                 return
 
-            if document.status == "indexing":
+            if document.status == "indexing" and document.updated_at > timezone.now() - timedelta(seconds=settings.CELERY_TASK_TIME_LIMIT):
                 logger.info(
                     f"[build_index_task] Document {document.pk} already indexing"
                 )
                 return
 
-            if DocumentChunk.objects.filter(document=document).exists():
-                logger.warning(
-                    f"[build_index_task] Chunks already exist "
-                    f"for document {document.pk}"
-                )
-
-                document.status = "ready"
-                document.save(update_fields=["status"])
-                return
-
+            document.error_message = ""
             document.status = "indexing"
-            document.save(update_fields=["status"])
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
         # OUTSIDE transaction
         # do heavy processing here
-        pipeline = get_registry().get_engine()
         # Scoped to this task: a worker thread indexes one document after
         # another, and leaving the credentials installed would spend the wrong
         # user's key on the next one.
-        with use_runtime(load_runtime(runtime_token)):
+        runtime = load_runtime(runtime_token)
+        with use_runtime(runtime):
+            pipeline = get_registry().get_engine()
             pipeline._build_index(
                 username=username,
                 document=document
             )
 
+        document.error_message = ""
         document.status = "ready"
-        document.save(update_fields=["status"])
+        document.save(update_fields=["status", "error_message", "updated_at"])
 
         return {
             "status": "success",
@@ -98,11 +97,13 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
         document = Document.objects.filter(pk=document_id).first()
         if document:
             document.status = "failed"
-            document.save(update_fields=["status"])
+            document.error_message = "Indexing timed out. Try a smaller file or different chunk settings."
+            document.save(update_fields=["status", "error_message", "updated_at"])
         # Don't retry on timeout — the task is inherently too slow
         raise
 
-    except UnsupportedConfiguration as e:
+    except (UnsupportedConfiguration, MissingAPIKeyError, AuthenticationError,
+            BadRequestError, NotFoundError, PermissionDeniedError, UnprocessableEntityError) as e:
         # The upload asked for something this deployment cannot do. Retrying
         # produces the same failure four minutes later, so fail it now and let
         # the user change the setting and re-upload.
@@ -112,7 +113,8 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
         document = Document.objects.filter(pk=document_id).first()
         if document:
             document.status = "failed"
-            document.save(update_fields=["status"])
+            document.error_message = scrub(str(e), runtime.keys if runtime else {})
+            document.save(update_fields=["status", "error_message", "updated_at"])
         raise
 
     except Exception as e:
@@ -124,8 +126,10 @@ def build_index_task(self, document_id: int, username: str, runtime_token: str =
         document = Document.objects.filter(pk=document_id).first()
 
         if document:
-            document.status = "failed"
-            document.save(update_fields=["status"])
+            retrying = self.request.retries < self.max_retries
+            document.status = "pending" if retrying else "failed"
+            document.error_message = ("Indexing will retry. " if retrying else "Indexing failed. ") + scrub(str(e), runtime.keys if runtime else {})
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
         raise self.retry(
             exc=e,

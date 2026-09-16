@@ -4,9 +4,11 @@ import { EvalScore } from "./types/types";
 export interface ChatContextResponse {
   text: string;
   metadata: {
-    document_id: number;
-    chunk_index: number;
-    username: string;
+    document_id?: number;
+    chunk_index?: number;
+    username?: string;
+    title?: string;
+    url?: string;
   };
 }
 
@@ -102,12 +104,28 @@ export interface DeepAnalysisConfig {
 }
 
 export interface FileMetadata {
-  id: string;
+  id: number;
   name: string;
   source_type: string;
   source_path: string;
   extracted_text_path: string;
   created_at: string;
+  status: "pending" | "indexing" | "ready" | "failed";
+  error_message: string;
+}
+
+export interface DocumentStatus {
+  document_id: number;
+  id: number;
+  name: string;
+  status: FileMetadata["status"];
+  error_message: string;
+}
+
+export interface UploadResponse {
+  status: number;
+  message: string;
+  data: DocumentStatus;
 }
 
 export interface ConversationItem {

@@ -1,19 +1,44 @@
-# Core LLM Settings  
-"llm_model": "gpt-4o",              # LLM for answer generation  
-"temperature": 0.0,                 # LLM temperature (0.0 = deterministic)  
-# Embedding Settings  
-"model": "text-embedding-3-small",  # OpenAI embedding model  
-# Retrieval Settings  
-"top_k": 5,                         # Number of documents to retrieve  
-# Chunking Strategy  
-"chunk_strategy": "paragraph",      # Options: "fixed", "paragraph", "semantic"  
-"chunk_size": 500,                  # Max characters per chunk  
-"overlap": 50,                      # Overlap for fixed chunking only  
-# Storage Settings  
-"vector_store_path": "./vector_stores",  # Path to store vector indices  
-# Iterative RAG Specific  
-"max_retries": 3,                   # Max iterations for iterative search  
-# Reranker Settings  
-"reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",  
-"reranker_top_k": 3,  
-"device": "cuda"                    # or "cpu" - auto-detected if not specified  
+# Server defaults. Restart backend and worker after changing.
+{
+  "llm_model": "qwen/qwen3-30b-a3b-instruct-2507",
+  "collection_name": "ragreader_collection",
+  "dense_config": {
+    "collection_name": "ragreader_collection",
+    "embedding_model": "google/gemini-embedding-2-preview",
+    "top_k": 4
+  },
+  "sparse_config": {
+    "collection_name": "ragreader_collection",
+    "top_k": 4,
+    "remove_stop_words": true
+  },
+  "hybrid_config": {
+    "rerank_only": true,
+    "reranker_model": "jinaai/jina-reranker-v3",
+    "top_k": 4,
+    "retrieval_top_k": 4
+  },
+  "crag_config": {
+    "llm_model": "mistralai/mistral-nemo",
+    "embedding_model": "google/gemini-embedding-2-preview",
+    "upper_threshold": 0.91,
+    "lower_threshold": 0.87,
+    "strip_threshold": 0.88,
+    "top_k": 4,
+    "external_chunk_size": 1000,
+    "external_chunk_overlap": 200,
+    "evaluator_model": "intfloat/multilingual-e5-small"
+  },
+  "multi_hop_config": {
+    "llm_model": "mistralai/mistral-nemo",
+    "max_hops": 3,
+    "top_k": 4
+  },
+  "evaluation_llm_model": "google/gemma-4-26b-a4b-it",
+  "evaluation_embedding_model": "openai/text-embedding-3-small",
+  "chunking": {
+    "strategy": "recursive",
+    "chunk_size": 500,
+    "overlap": 50
+  }
+}

@@ -54,3 +54,4 @@ requests
 PyPDF2
 wikipedia
 whitenoise
+PyYAML>=6.0

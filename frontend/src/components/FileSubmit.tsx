@@ -1,5 +1,4 @@
 import React, { useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import FileUploadSection from "./file/FileInput";
 import UrlUploadSection from "./file/URLInput";
 import TextUploadSection from "./file/TextInput";
@@ -20,7 +19,6 @@ const FileSubmit: React.FC<FileSubmitProps> = ({
 
   // Reference to the file input element to clear it programmatically
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const navigate = useNavigate();
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -77,8 +75,6 @@ const FileSubmit: React.FC<FileSubmitProps> = ({
       alert("Failed to submit.");
     } finally {
       setIsLoading(false);
-      navigate("/loading");
-      return;
     }
   };
 

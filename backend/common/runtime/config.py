@@ -7,9 +7,8 @@ payload); everything in this module exists to turn whatever the client sent
 into a safe, fully-populated dict.
 
 The contract that matters: **absent, partial or malformed input normalises to
-:data:`DEFAULT_PIPELINE_CONFIG`**, which is the exact composition the pipeline
-used before this feature existed. A client that knows nothing about config
-keeps working unchanged.
+:data:`DEFAULT_PIPELINE_CONFIG`**, which enables the main pipeline stages and defaults to the user's own
+uploaded documents, with external search off.
 
 Two sentinel conventions carry "the user did not choose", and they matter:
 
@@ -17,12 +16,12 @@ Two sentinel conventions carry "the user did not choose", and they matter:
 * ``None`` for a number.
 
 Both mean *defer to whatever the deployment configured in
-``rag/rag_service.py``* — deliberately not "use the value written here". Giving
+``config.yml``* — deliberately not "use the value written here". Giving
 these concrete defaults would silently override every deployment's own tuning
 with one hard-coded number, which is the opposite of configurable.
 
-Booleans are the exception: they carry real defaults, all of them matching the
-historic behaviour, because "on" and "off" leave no room for a third state.
+Booleans carry explicit defaults. External search is opt-in so a question
+about an uploaded file stays grounded in that file.
 
 API keys are **not** part of this object — they travel in a separate ``KEYS``
 field handled by :mod:`common.runtime.api_keys`. Everything here is logged verbatim and
@@ -89,11 +88,11 @@ DEFAULT_PIPELINE_CONFIG = {
     "retrievers": "both",
     # "auto" keeps the historic behaviour: the user's own collection when it
     # has anything in it, otherwise the shared base corpus.
-    "corpus": "auto",
+    "corpus": "user",
 
     # ── Corrective sub-stages (ignored when use_corrective is False) ─────────
     # Let weak local context escalate to the web at all.
-    "use_external_search": True,
+    "use_external_search": False,
     # The two external sources, individually.
     "use_wikipedia": True,
     "use_news": True,
@@ -342,7 +341,7 @@ def corrective_thresholds(config):
 
 
 def is_default(config) -> bool:
-    """True when the config asks for the historic full pipeline."""
+    """True when the config matches the document-only defaults."""
     return normalize_pipeline_config(config) == DEFAULT_PIPELINE_CONFIG
 
 

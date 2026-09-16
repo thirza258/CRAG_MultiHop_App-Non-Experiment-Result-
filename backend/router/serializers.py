@@ -58,6 +58,14 @@ class InsertDataSerializer(serializers.Serializer):
     CONFIG = JSONObjectField(required=False)
     KEYS = JSONObjectField(required=False)
 
+    def validate_FILE(self, value):
+        from pathlib import Path
+        if Path(value.name).suffix.lower() not in {".pdf", ".txt", ".md"}:
+            raise serializers.ValidationError("Upload a PDF, TXT, or Markdown file.")
+        if value.size > 20 * 1024 * 1024:
+            raise serializers.ValidationError("Files must be 20 MB or smaller.")
+        return value
+
 
 class DeepAnalysisSerializer(serializers.Serializer):
     USER = serializers.CharField()

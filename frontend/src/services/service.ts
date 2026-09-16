@@ -1,4 +1,4 @@
-import { DeleteDocumentResponse } from "../interface";
+import { DeleteDocumentResponse, DocumentStatus, UploadResponse } from "../interface";
 import { ApiKeys, CorpusInfo, PipelineConfig } from "../types/types";
 import { apiClient } from "./apiClient";
 
@@ -64,7 +64,7 @@ const submitFile = async (
     formData.append("USER", username);
     appendSettings(formData, settings);
 
-    const response = await apiClient.post("/insert-data/", formData, {
+    const response = await apiClient.post<UploadResponse>("/insert-data/", formData, {
         headers: {
             "Content-Type": "multipart/form-data",
         },
@@ -78,7 +78,7 @@ const submitURL = async (
     username: string,
     settings?: RequestSettings
 ) => {
-    const response = await apiClient.post(
+    const response = await apiClient.post<UploadResponse>(
         "/insert-url/",
         {
             URL: url,
@@ -100,7 +100,7 @@ const submitText = async (
     username: string,
     settings?: RequestSettings
 ) => {
-    const response = await apiClient.post("/insert-text/", {
+    const response = await apiClient.post<UploadResponse>("/insert-text/", {
         TEXT: text,
         USER: username,
         ...settingsBody(settings),
@@ -138,7 +138,7 @@ const getConversation = async (conversation_id: string) => {
 
 const getDocumentInfo = async (username: string) => {
   const response = await apiClient.get(
-    `/document/${username}/`,
+    `/document/${encodeURIComponent(username)}/`,
     jsonConfig
   );
   return response.data;
@@ -146,7 +146,7 @@ const getDocumentInfo = async (username: string) => {
 
 const getConversationHistory = async (username: string) => {
   const response = await apiClient.get(
-    `/conversation-history/${username}/`,
+    `/conversation-history/${encodeURIComponent(username)}/`,
     jsonConfig
   );
   return response.data;
@@ -181,32 +181,56 @@ const getCorpusInfo = async (username: string): Promise<CorpusInfo | null> => {
 import { AxiosError } from "axios";
 
 const deleteDocument = async (
-  documentId: string,
+  documentId: string | number,
   username: string
 ): Promise<DeleteDocumentResponse> => {
-  try {
-    const response = await apiClient.delete<DeleteDocumentResponse>(
-      `/document/${encodeURIComponent(documentId)}/${encodeURIComponent(username)}/`
-    );
+  const response = await apiClient.delete<DeleteDocumentResponse>(
+    `/document/${encodeURIComponent(documentId)}/${encodeURIComponent(username)}/`
+  );
+  return response.data;
+};
 
-    return response.data;
-  } catch (error: unknown) {
-    if (error instanceof AxiosError) {
-      const apiError = {
-        status: error.response?.status ?? 500,
-        message:
-          error.response?.data?.error ||
-          "An error occurred while deleting the document",
-        originalError: error,
-      };
+export const DOCUMENTS_CHANGED = "crag:documents-changed";
+export const HISTORY_CHANGED = "crag:history-changed";
+export const documentsChanged = () => window.dispatchEvent(new Event(DOCUMENTS_CHANGED));
 
-      throw apiError;
-    }
-
-    throw new Error(
-      "Network error: unable to reach the document deletion endpoint"
-    );
+export const errorMessage = (error: unknown): string => {
+  if (error instanceof AxiosError) {
+    const data = error.response?.data;
+    if (typeof data?.message === "string") return data.message;
+    if (data && typeof data === "object") return Object.values(data).flat().join(" ");
   }
+  return error instanceof Error ? error.message : "Request failed. Please try again.";
+};
+
+const waitForDocument = async (
+  initial: DocumentStatus,
+  username: string,
+  onStatus: (document: DocumentStatus) => void,
+  signal: AbortSignal,
+): Promise<DocumentStatus> => {
+  let document = initial;
+  const deadline = Date.now() + 15 * 60_000;
+  while (!signal.aborted) {
+    onStatus(document);
+    if (document.status === "ready") return document;
+    if (document.status === "failed") {
+      throw new Error(document.error_message || "Indexing failed. Check your API key and upload again.");
+    }
+    if (Date.now() > deadline) {
+      throw new Error("Indexing is taking longer than expected. Check the document status before asking a question.");
+    }
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(new DOMException("Cancelled", "AbortError")); };
+      const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, 1500);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    const response = await apiClient.get<{ data: DocumentStatus }>(
+      `/document/${document.document_id}/${encodeURIComponent(username)}/`, { signal },
+    );
+    document = response.data.data;
+  }
+  throw new DOMException("Cancelled", "AbortError");
 };
 
 export default {
@@ -220,4 +244,5 @@ export default {
     getConversationHistory,
     getCorpusInfo,
     deleteDocument,
+    waitForDocument,
 };

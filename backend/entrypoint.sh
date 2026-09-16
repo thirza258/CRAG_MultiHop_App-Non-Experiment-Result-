@@ -4,8 +4,6 @@ set -e
 cd /app
 
 MODEL_DIR="${MODEL_CACHE_DIR:-/app/models}"
-JINA_MARKER="$MODEL_DIR/jinaai--jina-reranker-v3/.download_complete"
-E5_MARKER="$MODEL_DIR/intfloat--multilingual-e5-small/.download_complete"
 
 # ── Wait for PostgreSQL ──────────────────────────────────────────────
 if [ -n "$DATABASE_URL" ]; then
@@ -59,23 +57,9 @@ else:
 "
 
 if [ "${SKIP_INIT:-0}" = "1" ]; then
-    # ── Worker mode: the backend container owns migrations, dataset ──
-    # insert and model download. Just wait until the models it downloads
-    # into the shared volume are ready, then start.
-    timeout="${MODEL_WAIT_TIMEOUT:-900}"
-    echo "SKIP_INIT=1 — waiting up to ${timeout}s for models prepared by the backend..."
-    waited=0
-    while [ "$waited" -lt "$timeout" ]; do
-        if [ -f "$JINA_MARKER" ] && [ -f "$E5_MARKER" ]; then
-            echo "Models are ready."
-            break
-        fi
-        sleep 5
-        waited=$((waited + 5))
-    done
-    if [ ! -f "$JINA_MARKER" ] || [ ! -f "$E5_MARKER" ]; then
-        echo "WARNING: models not ready after ${timeout}s — starting anyway (will fall back to HuggingFace Hub)"
-    fi
+    # Compose waits for backend health before starting the worker. Optional
+    # reranker/grader downloads must not prevent it from accepting uploads.
+    echo "SKIP_INIT=1 — using initialization completed by the backend."
 else
     echo "Collecting static files..."
     python manage.py collectstatic --noinput
@@ -86,9 +70,20 @@ else
     echo "Preparing base dataset..."
     python insert_base_dataset.py || echo "WARNING: insert_base_dataset.py failed — continuing anyway (re-run: docker compose exec backend python insert_base_dataset.py)"
 
-    mkdir -p "$MODEL_DIR"
-    echo "Checking / downloading models..."
-    python dl_reranker_model.py || echo "WARNING: model download incomplete — continuing anyway (re-run: docker compose exec backend python dl_reranker_model.py)"
+    case "$(printf '%s' "${PRELOAD_MODELS:-true}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on)
+            mkdir -p "$MODEL_DIR"
+            echo "Checking / downloading configured models..."
+            python dl_reranker_model.py || echo "WARNING: model download incomplete — continuing anyway (re-run: docker compose exec backend python dl_reranker_model.py)"
+            ;;
+        0|false|no|off)
+            echo "PRELOAD_MODELS=false — local models will load when their stages are used."
+            ;;
+        *)
+            echo "ERROR: PRELOAD_MODELS must be true or false."
+            exit 1
+            ;;
+    esac
 fi
 
 exec "$@"

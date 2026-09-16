@@ -28,6 +28,7 @@ export const FileUploadSection: React.FC<FileUploadProps> = ({
       <input
         id="file-upload"
         type="file"
+        accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
         ref={inputRef}
         onChange={onChange}
         disabled={disabled}
@@ -46,6 +47,7 @@ export const FileUploadSection: React.FC<FileUploadProps> = ({
         </button>
       )}
     </div>
+    <p className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">PDF, TXT, or Markdown · up to 20 MB</p>
 
     {fileName && (
       <p className="mt-1 truncate text-sm text-[hsl(var(--muted-foreground))]">

@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Any, List, Dict
 from common.runtime.context import resolve_param
 from emitter.status import NULL_EMITTER
@@ -8,6 +9,21 @@ from .query_expander import QueryExpander
 
 logger = logging.getLogger(__name__)
 
+
+class _LazyEvaluator:
+    """Load the optional grader only when corrective retrieval actually runs."""
+    def __init__(self, config):
+        self.config = config
+        self.factory = CRAGEvaluator
+        self.instance = None
+        self.lock = threading.Lock()
+
+    def __getattr__(self, name):
+        with self.lock:
+            if self.instance is None:
+                self.instance = self.factory(self.config)
+        return getattr(self.instance, name)
+
 class CorrectiveRAG:
     # The real emitter arrives later via set_emitter(); the class-level default
     # keeps direct construction (and instances built without __init__) from
@@ -16,7 +32,7 @@ class CorrectiveRAG:
 
     def __init__(self, retriever, config: Dict[str, Any]):
         self.retriever      = retriever
-        self.evaluator      = CRAGEvaluator(config)
+        self.evaluator      = _LazyEvaluator(config)
         self.external       = ExternalSearcher(config)
         self.query_expander = QueryExpander(config)
         # self.seen_urls: set = set()
@@ -136,6 +152,11 @@ class CorrectiveRAG:
             self.emitter.emit("corrective_pipeline", f"Correct decision — returning {len(filtered)} chunks")
             return filtered, filtered_metas, "correct"
 
+        if not resolve_param("use_external_search", True):
+            # The local grader is advisory in document-only mode. Keep the
+            # source metadata so the answer can cite the uploaded document.
+            return filtered or docs, (filtered_metas if filtered else metas), "local_only"
+
         elif decision == "ambiguous":
             self.emitter.emit("corrective_pipeline", "Ambiguous decision — attempting resolution")
             logger.info("[retrieve_with_decision] ambiguous — attempting to resolve")
@@ -192,6 +213,8 @@ class CorrectiveRAG:
 
         # Must be a real set: _track_urls() calls .add() on it unconditionally.
         seen_urls = seen_urls if seen_urls is not None else set()
+        if not self._expansion_enabled:
+            return [], [], "ambiguous"
         self._track_urls(previous_metas, seen_urls)
         where_filter = self._build_filter(seen_urls)
 

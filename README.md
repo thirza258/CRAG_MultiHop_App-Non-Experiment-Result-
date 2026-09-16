@@ -121,7 +121,7 @@ Prefer to do it step by step? Follow below.
    The reranker + evaluator models (~2 GB) are otherwise downloaded on first startup. To download them ahead of time from your host machine:
 
    ```bash
-   pip install huggingface-hub
+   pip install huggingface-hub PyYAML
    cd backend && python dl_reranker_model.py && cd ..
    ```
 
@@ -173,7 +173,7 @@ The **backend container owns all initialization** (the worker waits until the ba
 1. Waits for PostgreSQL and ChromaDB to accept connections.
 2. Collects static files and applies database migrations.
 3. Ensures the base ChromaDB collection exists and the MultiHop-RAG corpus file is cached (`backend/corpus/corpus.json` — already bundled in the repo, so normally no download happens).
-4. Downloads the two local models into `backend/models/` **unless already present**:
+4. With `PRELOAD_MODELS=true` (the default), downloads the local models selected in `backend/config.yml` into `backend/models/` **unless already present**. Defaults:
    - `jinaai/jina-reranker-v3` (~1.2 GB)
    - `intfloat/multilingual-e5-small` (~0.5 GB)
 
@@ -194,13 +194,15 @@ docker compose exec backend python insert_base_dataset.py
 ## Using the app
 
 1. Open **<http://localhost:5151>**. `/` is the public landing page; **Get Started** takes you to `/login` (guest login — just pick a username and email), which lands you in the chat at `/chat`.
-2. **Add a document**: upload a PDF, paste text, or submit a URL.
-3. Wait for indexing to finish (the worker chunks the document, embeds it, and stores it in ChromaDB).
+2. **Add a document**: upload a PDF, UTF-8 TXT or Markdown file (up to 20 MB), paste text, or submit a URL. PDFs must contain selectable text; scanned PDFs need OCR first.
+3. Wait for **Ready**. The chat shows upload/indexing progress and the document list refreshes automatically. If indexing fails, it shows the reason; submitting the same document again retries it.
 4. **Chat**: ask questions about your document. The pipeline streams status updates (retrieval → grading → reranking → generation → evaluation) over a websocket, then shows the answer with its supporting chunks and faithfulness / answer-relevancy scores.
 
 ### Configuring the pipeline per query
 
-The **Pipeline** panel in the chat sidebar controls how the next query is answered. The choice is saved in the browser and sent with every question as a `CONFIG` object. It is grouped into collapsible sections; everything defaults to the pipeline the app has always run.
+By default, questions search **My docs**, with **External search off**. Uploading a document selects My docs. Enable external search explicitly to allow Wikipedia/news, or choose Base corpus to search the benchmark. A pending upload pauses document questions; an unavailable corpus never silently switches to another source.
+
+The **Pipeline** panel in the chat sidebar controls how the next query is answered. The choice is saved in the browser and sent with every question as a `CONFIG` object. It is grouped into collapsible sections; the main stages are enabled by default while answers stay grounded in your documents.
 
 **Stages** — each one is a genuine composition change, not a flag the pipeline ignores:
 
@@ -215,7 +217,7 @@ The **Pipeline** panel in the chat sidebar controls how the next query is answer
 
 | Control | Options | Effect |
 |---------|---------|--------|
-| **Chat model** | any OpenRouter chat model | Answer generation, multi-hop decisions and query expansion. Left as *Server default*, each stage keeps the model configured in `rag/rag_service.py`. |
+| **Chat model** | any OpenRouter chat model | Answer generation, multi-hop decisions and query expansion. Left as *Server default*, each stage keeps the model configured in `backend/config.yml`. |
 | **Embedding model** | any OpenRouter embedding model | Embeds **newly indexed documents** — see the caveat below. |
 | **Temperature** | 0.0–2.0 | How freely the *answer* is worded. The pipeline's own decision calls (which documents to fetch) stay deterministic either way — sampling those would change retrieval, not phrasing. |
 
@@ -223,7 +225,7 @@ The **Pipeline** panel in the chat sidebar controls how the next query is answer
 
 | Control | Options | Effect |
 |---------|---------|--------|
-| **Corpus** | Auto / My docs / Base corpus | Which ChromaDB collection to search. `Auto` keeps the historic behaviour (your documents when you have any, otherwise the shared corpus). `My docs` refuses to silently fall back — if you have no documents it says so. |
+| **Corpus** | Auto / My docs / Base corpus | Which ChromaDB collection to search. `My docs` is the default. `Auto` searches your documents when present, otherwise the shared corpus. `My docs` refuses to silently fall back — if you have no documents it says so. |
 | **Retrievers** | Both / Dense / BM25 | Run both base retrievers, or only embedding similarity, or only keyword search. |
 | **Chunks retrieved** | 1–20 | How many chunks each retriever fetches before merging. |
 | **Chunks kept** | 1–20 | How many survive the merge/rerank — what the model actually reads. |
@@ -255,7 +257,7 @@ The **Pipeline** panel in the chat sidebar controls how the next query is answer
 | **Answer relevancy** / **Faithfulness** | on/off each | The two RAGAS metrics. Each is its own judge pass, so switching one off is a real saving. |
 | **Judge model** / **Judge embedding model** | any OpenRouter model | Left on the default, the judge is a *different* model from the one answering — a model scoring its own output flatters itself, which is why the judge is configured separately. |
 
-Two sentinels run through all of this: `null` for a number and `""` for a model id or named strategy both mean **defer to whatever the deployment configured**, deliberately not "use the value written in the client". Giving them concrete defaults would override every deployment's own tuning in `rag/rag_service.py` — a panel nobody touched would silently retune the server.
+Two sentinels run through all of this: `null` for a number and `""` for a model id or named strategy both mean **defer to whatever the deployment configured**, deliberately not "use the value written in the client". Giving them concrete defaults would override every deployment's own tuning in `backend/config.yml` — a panel nobody touched would silently retune the server.
 
 Every one of these is resolved per request from a `contextvars.ContextVar`, never written onto the pipeline. The pipeline is a single process-wide instance shared by every concurrent query, so a setting stored on it is a setting two users share: whoever wrote last wins for both.
 
@@ -269,7 +271,7 @@ Two models run from snapshots downloaded to the server rather than through OpenR
 
 The model lists come from OpenRouter's two public catalogs, proxied and cached by `GET /api/v1/models/`. They are separate endpoints for a reason: embedding models are **not** in OpenRouter's main `/models` catalog at all, they live behind `/embeddings/models`. Both pickers are searchable and also accept a model id typed by hand, so a model released after the cached list still works.
 
-With corrective off, for instance, multi-hop wraps the base retriever directly rather than the graded one. Server-side, `backend/common/runtime/config.py` validates and clamps whatever arrives, so **an absent or malformed `CONFIG` runs exactly the default full pipeline** — older clients are unaffected.
+With corrective off, for instance, multi-hop wraps the base retriever directly rather than the graded one. Server-side, `backend/common/runtime/config.py` validates and clamps whatever arrives, so **an absent or malformed `CONFIG` uses the document-only defaults**.
 
 #### Why the embedding model is not a per-query choice
 
@@ -297,13 +299,15 @@ Keys are stored in your browser only, sent with each request as a top-level `KEY
 
 A key you supply is used for indexing too, so bringing your own means you pay for your own embeddings rather than the deployment's. Because indexing runs in a Celery worker, the credentials are handed over through a short-lived Redis entry keyed by a random token rather than as task arguments — task arguments are persisted in the broker and echoed into Celery's logs on failure (`backend/common/runtime/handoff.py`).
 
+If the settings handoff is unavailable or expires, indexing fails with a retry message instead of silently changing the model, chunking settings, or billing key.
+
 This also means the server does not strictly need its own `OPENROUTER_API_KEY`: with none configured, the app still starts and every user brings their own.
 
 ### When a stage fails
 
 Each stage degrades on its own rather than failing the query. If dense retrieval dies the answer still comes from BM25; if the reranker is unavailable the merged chunks are used in retrieval order; if answer generation fails the retrieved **sources are still returned**. Every response carries a `degraded` list naming the stages that fell back (empty on a healthy run), and when nothing at all could be retrieved the app says so instead of letting the model guess.
 
-If you haven't uploaded any documents, queries fall back to the shared base collection (see [Indexing the base dataset](#indexing-the-base-dataset-optional)).
+If you have no uploaded documents, the default query asks you to upload one. Choose Auto or Base corpus explicitly to use the shared collection (see [Indexing the base dataset](#indexing-the-base-dataset-optional)).
 
 ### Frontend routes
 
@@ -322,7 +326,11 @@ Public-page metadata lives in `frontend/index.html` (static tags for social craw
 
 ## Configuration reference
 
-All backend settings live in `backend/.env` (see `backend/.env.example`):
+Connection settings and API keys live in `backend/.env` (see `backend/.env.example`). Pipeline defaults are loaded from **`backend/config.yml`**: generator and judge models, retrieval budgets, hop limit, corrective thresholds, local grader/reranker models, and chunking. Docker mounts this file into both backend and worker; restart both after editing. `RAG_CONFIG_FILE` can select a different YAML file. The chat sidebar overrides supported settings per request.
+
+Local development uses the Vite proxy: set `DEV_BACKEND_URL=http://127.0.0.1:8000` in `frontend/.env`. `VITE_API_URL` sets the API base and `VITE_WS_URL` optionally sets a separate WebSocket origin. Rebuild the frontend after changing `VITE_` values in Docker.
+
+Environment reference:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -339,7 +347,9 @@ All backend settings live in `backend/.env` (see `backend/.env.example`):
 | `LANGSMITH_*` | disabled | Optional LangSmith tracing |
 | `NEWS_API_KEY` | — | Optional, for corrective retrieval's news lookup. Users can supply their own in the chat sidebar |
 
-Extra knobs (rarely needed): `MODEL_CACHE_DIR` (model download dir, default `/app/models`), `MODEL_DOWNLOAD_MAX_ATTEMPTS` (default 5), `MODEL_WAIT_TIMEOUT` (worker wait for models, default 900 s), `CHROMA_CONNECT_ATTEMPTS` (default 30).
+Extra knobs (rarely needed): `MODEL_CACHE_DIR` (model download dir, default `/app/models`), `MODEL_DOWNLOAD_MAX_ATTEMPTS` (default 5), `PRELOAD_MODELS` (download configured local models before startup, default `true`), `CHROMA_CONNECT_ATTEMPTS` (default 30). With `PRELOAD_MODELS=false`, uncached local models load when their stages are first used; disable those stages in the sidebar if they are not needed.
+
+`CELERY_WORKER_CONCURRENCY` defaults to `2` to limit memory used by indexing workers. Increase it when the server has capacity for more simultaneous uploads.
 
 Frontend settings in `frontend/.env`:
 
@@ -373,6 +383,8 @@ The script is idempotent: it skips indexing when the collection is already popul
 
 ## Testing
 
+Frontend connection regression checks run with `cd frontend && npm test`; `npm run build` verifies TypeScript and the production bundle.
+
 Tests live **next to the code they cover**, and every one of them runs with no network, no API key and no PostgreSQL/Redis/ChromaDB server — all external calls are mocked.
 
 | File | Covers |
@@ -385,6 +397,7 @@ Tests live **next to the code they cover**, and every one of them runs with no n
 | `sparse_rag/tests.py` | Tokenisation and stop words, BM25 ranking, lazy index loading. |
 | `hybrid_rag/tests.py`, `hybrid_rag/test_merge.py` | Reranker fallback; merge/dedup/truncate and the rerank-disabled path. |
 | `router/tests.py` | Every REST endpoint through the Django test client, including file-hash dedup on re-upload. |
+| `router/test_document_flow.py` | Real file storage, PDF/text parsing, database and in-memory Chroma; 48 stage/retriever combinations, upload retries, corpus isolation, chunking/model pinning, deletion and concurrent request state. Remote model calls are fixtures. |
 | `router/test_tasks.py` | `build_index_task` status transitions, duplicate guards, retry on failure. |
 | `router/test_consumers.py` | The query websocket: the sidebar's `CONFIG` arriving at the pipeline intact. |
 | `common/tests.py`, `common/test_pipeline_config.py`, `common/test_chunker.py` | NLTK bootstrap, local model paths, config normalisation/clamping, chunking strategies. |
@@ -522,7 +535,7 @@ The Docker Compose setup runs as-is on any VPS with Docker installed — `./depl
 |---------|-------------|
 | First start is slow, frontend can't reach backend yet | Models (~2 GB) are downloading. Watch `docker compose logs -f backend`. The backend only reports healthy after init finishes. |
 | `Model download failed` in logs | Network issue. Downloads auto-retry with backoff; if they still fail, re-run `docker compose exec backend python dl_reranker_model.py` — it resumes where it stopped. Or pre-download on the host (Quick Start step 4). |
-| Worker logs `waiting for models prepared by the backend` | Normal — the worker waits (up to `MODEL_WAIT_TIMEOUT`, 900 s) for the backend to finish downloading into the shared `backend/models/` folder. |
+| Worker has not started yet | Compose waits for the backend health check before starting the worker. Check backend initialization with `docker compose logs -f backend`; the worker does not wait separately for optional model files. |
 | `Could not reach ChromaDB` | ChromaDB is still starting; the backend retries for ~60 s. If it persists: `docker compose logs chromadb` and check port `8002` isn't already taken on the host. |
 | Answers say `OpenRouter Error (...)` | Missing/invalid `OPENROUTER_API_KEY`, or no credits. Calls retry 3× before giving up. |
 | `DATABASE_URL is required when DEVELOPMENT_MODE is not 'true'` | Set `DATABASE_URL` in `backend/.env`, or use `DEVELOPMENT_MODE=true` (SQLite) for local dev. |

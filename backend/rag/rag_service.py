@@ -1,4 +1,6 @@
 from pipeline.app_pipeline import AppRAGPipeline
+from rag.config import load_pipeline_config
+from threading import RLock
 
 
 class RAGRegistry:
@@ -15,7 +17,7 @@ class RAGRegistry:
             return
 
         self.engine = None
-        self.initialize_engine()
+        self._lock = RLock()
         self._initialized = True
 
     def initialize_engine(self):
@@ -23,53 +25,7 @@ class RAGRegistry:
         Initialize a single RAG pipeline.
         """
 
-        crag_config = {
-            "llm_model": "mistralai/mistral-nemo",
-            "embedding_model": "google/gemini-embedding-2-preview",
-            "upper_threshold": 0.91,
-            "lower_threshold": 0.87,
-            "strip_threshold": 0.88,
-            "top_k": 4,
-            "external_chunk_size": 1000,
-            "external_chunk_overlap": 200,
-        }
-
-        multi_hop_config = {
-            "llm_model": "mistralai/mistral-nemo",
-            "max_hops": 3,
-            "top_k": 4,
-        }
-
-        dense_config = {
-            "collection_name": "ragreader_collection",
-            "embedding_model": "google/gemini-embedding-2-preview",
-            "top_k": 4,
-        }
-
-        sparse_config = {
-            "collection_name": "ragreader_collection",
-            "top_k": 4,
-            "remove_stop_words": True,
-        }
-
-        hybrid_config = {
-            "rerank_only": True,
-            "reranker_model": "jinaai/jina-reranker-v3",
-            "top_k": 4,
-            "retrieval_top_k": 4,
-        }
-
-        instance_config = {
-            "llm_model": "qwen/qwen3-30b-a3b-instruct-2507",
-            "collection_name": "ragreader_collection",
-            "dense_config": dense_config,
-            "sparse_config": sparse_config,
-            "hybrid_config": hybrid_config,
-            "crag_config": crag_config,
-            "multi_hop_config": multi_hop_config,
-            "evaluation_llm_model": "google/gemma-4-26b-a4b-it",
-            "evaluation_embedding_model": "openai/text-embedding-3-small"
-        }
+        instance_config = load_pipeline_config()
 
         try:
             self.engine = AppRAGPipeline(instance_config)
@@ -89,8 +45,9 @@ class RAGRegistry:
         was briefly unavailable), retry once per call instead of staying
         broken until the container restarts.
         """
-        if self.engine is None:
-            self.initialize_engine()
+        with self._lock:
+            if self.engine is None:
+                self.initialize_engine()
         if self.engine is None:
             raise ValueError(
                 "RAG engine is not initialized (see startup logs for the "
