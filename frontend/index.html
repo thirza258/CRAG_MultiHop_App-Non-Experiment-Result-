@@ -22,15 +22,23 @@
     <meta name="author" content="CRAG MultiHop RAG Team" />
     <link rel="canonical" href="https://crag.nevatal.tech/" />
     <meta name="robots" content="index, follow, max-image-preview:large" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#240091" />
     <meta name="color-scheme" content="light" />
+
+    <!-- PWA: iOS standalone mode (the manifest link + web manifest are
+         injected at build time by vite-plugin-pwa) -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="CRAG RAG" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
 
     <!-- Preconnect for performance optimization -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
-    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

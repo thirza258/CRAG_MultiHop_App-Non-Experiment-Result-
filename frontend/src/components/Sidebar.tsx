@@ -90,20 +90,20 @@ return (
       </h2>
     </div>
 
-    {/* Scrollable sections container - flex column with equal children */}
-    <div className="flex-1 flex flex-col min-h-0 p-4">
+    {/* Scrollable sections container */}
+    <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4">
 
       {/* Per-query pipeline configuration */}
-      <div className="flex-shrink-0 space-y-3 overflow-y-auto">
+      <div className="space-y-3">
         <PipelineConfigPanel />
         <ApiKeysPanel />
       </div>
 
-      <hr className="border-[hsl(var(--border))] my-4 flex-shrink-0" />
+      <hr className="border-[hsl(var(--border))]" />
 
       {/* Current Active Content Section */}
-      <section className="flex flex-col min-h-0 flex-1">
-        <div className="flex justify-between items-center mb-3 flex-shrink-0">
+      <section>
+        <div className="flex justify-between items-center mb-3">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-[hsl(var(--primary))]">
             Document List
           </h3>
@@ -111,7 +111,7 @@ return (
             {files?.length || 0} Items
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div>
           {!files?.length ? (
             <div className="p-4 rounded bg-[hsl(var(--muted))] border border-dashed border-[hsl(var(--border))] text-center">
               <p className="text-sm text-[hsl(var(--muted-foreground))]">
@@ -166,11 +166,11 @@ return (
       </section>
 
       {/* Divider */}
-      <hr className="border-[hsl(var(--border))] my-4 flex-shrink-0" />
+      <hr className="border-[hsl(var(--border))]" />
 
       {/* Recent History Section */}
-      <section className="flex flex-col min-h-0 flex-1">
-        <div className="flex justify-between items-center mb-3 flex-shrink-0">
+      <section>
+        <div className="flex justify-between items-center mb-3">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-[hsl(var(--primary))]">
             Recent History
           </h3>
@@ -178,7 +178,7 @@ return (
             {history?.length || 0} Items
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div>
           {!history?.length ? (
             <p className="text-sm text-[hsl(var(--muted-foreground))] italic">
               No recent history.
