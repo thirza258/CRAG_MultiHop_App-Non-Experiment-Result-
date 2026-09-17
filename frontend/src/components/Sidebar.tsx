@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import service from "../services/service";
+import service, { DOCUMENTS_CHANGED, HISTORY_CHANGED, documentsChanged, errorMessage } from "../services/service";
 import { FileMetadata, ConversationItem } from "../interface";
 import PipelineConfigPanel from "./settings/PipelineConfigPanel";
 import ApiKeysPanel from "./settings/ApiKeysPanel";
@@ -28,7 +28,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleDeleteFile = async (fileId: string, fileName: string) => {
+  const handleDeleteFile = async (fileId: number, fileName: string) => {
     if (!usernameFromStorage) return;
     const confirmDelete = window.confirm(`Are you sure you want to delete "${fileName}"?`);
     if (!confirmDelete) return;
@@ -36,9 +36,10 @@ const Sidebar: React.FC = () => {
     try {
       await service.deleteDocument(fileId, usernameFromStorage);
       setFiles(prev => prev.filter(f => f.id !== fileId));
+      documentsChanged();
     } catch (error) {
       console.error("Delete failed:", error);
-      alert("Failed to delete document. Please try again.");
+      alert(errorMessage(error));
     }
   };
 
@@ -79,6 +80,14 @@ const Sidebar: React.FC = () => {
     };
 
     fetchData();
+    window.addEventListener(DOCUMENTS_CHANGED, fetchData);
+    window.addEventListener(HISTORY_CHANGED, fetchData);
+    const timer = window.setInterval(() => fetchFiles(usernameFromStorage), 5000);
+    return () => {
+      window.removeEventListener(DOCUMENTS_CHANGED, fetchData);
+      window.removeEventListener(HISTORY_CHANGED, fetchData);
+      window.clearInterval(timer);
+    };
   }, [usernameFromStorage, navigate]);
 
 return (
@@ -91,7 +100,7 @@ return (
     </div>
 
     {/* Scrollable sections container */}
-    <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4">
+    <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
 
       {/* Per-query pipeline configuration */}
       <div className="space-y-3">
@@ -115,7 +124,7 @@ return (
           {!files?.length ? (
             <div className="p-4 rounded bg-[hsl(var(--muted))] border border-dashed border-[hsl(var(--border))] text-center">
               <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                No active content selected.
+                Upload a document using the attachment button to get started.
               </p>
             </div>
           ) : (
@@ -126,6 +135,8 @@ return (
                   className="group flex items-center justify-between p-3 rounded bg-[hsl(var(--background))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted))] transition-colors"
                 >
                   <div className="flex-1 min-w-0">
+                    <p className="text-xs capitalize text-[hsl(var(--muted-foreground))]">{file.status}</p>
+                    {file.error_message && <p role="alert" className="text-xs text-red-500">{file.error_message}</p>}
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium truncate" title={file.name}>
                         {file.name}
@@ -137,6 +148,7 @@ return (
                   </div>
                   <button
                     onClick={() => handleDeleteFile(file.id, file.name)}
+                    disabled={file.status === "pending" || file.status === "indexing"}
                     className="ml-2 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--destructive))] transition-colors flex-shrink-0"
                     aria-label="Delete document"
                   >

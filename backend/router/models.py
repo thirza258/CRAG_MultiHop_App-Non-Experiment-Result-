@@ -35,6 +35,7 @@ class Document(models.Model):
         default="pending", blank=True, null=True
     )
     file_hash = models.CharField(max_length=64, blank=True, null=True)
+    error_message = models.TextField(blank=True, default="")
     
     class Meta:
         constraints = [

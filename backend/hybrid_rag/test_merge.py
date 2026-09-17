@@ -51,17 +51,21 @@ def _hybrid(retrieval_top_k=5, rerank=_identity_rerank, **config):
 
 
 def _hybrid_without_model_attribute(retrieval_top_k=5):
-    """A patched-out loader never assigns self._model, so the attribute is absent."""
-    with mock.patch.object(HybridRAG, "_load_reranker"):
-        return HybridRAG({"rerank_only": True, "retrieval_top_k": retrieval_top_k})
+    """Simulate a partially constructed instance with no model/load state."""
+    hr = HybridRAG({"rerank_only": True, "retrieval_top_k": retrieval_top_k})
+    del hr._model
+    del hr._reranker_state
+    return hr
 
 
 def _hybrid_with_failed_load(retrieval_top_k=5):
-    """Runs the real __init__ except-branch, which sets self._model = None."""
+    """Run the lazy load failure path without downloading a snapshot."""
     with mock.patch.object(
         HybridRAG, "_load_reranker", side_effect=RuntimeError("no local snapshot")
     ):
-        return HybridRAG({"rerank_only": True, "retrieval_top_k": retrieval_top_k})
+        hr = HybridRAG({"rerank_only": True, "retrieval_top_k": retrieval_top_k})
+        hr._ensure_reranker()
+        return hr
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -260,6 +264,31 @@ class PrecomputedMergeTests(unittest.TestCase):
 
 @unittest.skipIf(HybridRAG is None, f"hybrid_rag unavailable: {IMPORT_ERROR}")
 class RerankerToggleAndDegradationTests(unittest.TestCase):
+    def test_disabled_reranking_never_loads_a_model(self):
+        with mock.patch.object(HybridRAG, "_load_reranker") as load:
+            hr = HybridRAG({"rerank_only": True})
+            hr.retrieve_from_precomputed("q", ["text"], [], [{}], [], use_reranker=False)
+        load.assert_not_called()
+
+    def test_request_copies_load_one_shared_model(self):
+        from copy import copy
+        from concurrent.futures import ThreadPoolExecutor
+
+        model = mock.Mock()
+        model.rerank.side_effect = _identity_rerank
+        hr = HybridRAG({"rerank_only": True})
+        copies = [copy(hr), copy(hr)]
+
+        def load(instance):
+            instance._model = model
+
+        with mock.patch.object(HybridRAG, "_load_reranker", autospec=True, side_effect=load) as loader:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda instance: instance._rerank("q", ["a", "b"]), copies))
+        self.assertEqual(results, [([0, 1], "ok"), ([0, 1], "ok")])
+        loader.assert_called_once()
+        self.assertIs(copies[0]._model, copies[1]._model)
+
     def test_use_reranker_false_merges_and_truncates_without_calling_the_model(self):
         # The fake would reverse the order, so merge order in the result proves
         # the reranker was bypassed rather than merely returning identity.

@@ -22,10 +22,10 @@ export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   use_reranker: true,
   use_evaluation: true,
   retrievers: "both",
-  corpus: "auto",
+  corpus: "user",
 
   // Corrective sub-stages.
-  use_external_search: true,
+  use_external_search: false,
   use_wikipedia: true,
   use_news: true,
   use_query_expansion: true,

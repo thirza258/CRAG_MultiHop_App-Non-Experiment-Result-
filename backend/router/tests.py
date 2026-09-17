@@ -139,6 +139,9 @@ class RouterAPITestCase(TestCase):
         # Celery dispatch, ChromaDB and the RAG engine.
         self.build_index_task = self._patch("build_index_task")
         self.get_chroma_client = self._patch("get_chroma_client")
+        chroma_patcher = mock.patch("chroma.chroma_settings.get_client")
+        self.chroma_client = chroma_patcher.start().return_value
+        self.addCleanup(chroma_patcher.stop)
         self.get_registry = self._patch("get_registry")
         self.engine = self.get_registry.return_value.get_engine.return_value
 
@@ -156,6 +159,7 @@ class InsertDataAPITests(RouterAPITestCase):
 
     def _upload(self, content=b"%PDF-1.4 fake pdf bytes", name="notes.pdf",
                 username="alice"):
+        self.loader.process_input.return_value["source_type"] = "pdf"
         return self.client.post(
             self.URL,
             {
@@ -168,7 +172,7 @@ class InsertDataAPITests(RouterAPITestCase):
         resp = self._upload()
 
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json()["data"], "Data inserted successfully!")
+        self.assertEqual(resp.json()["data"]["status"], "pending")
 
         document = Document.objects.get()
         self.assertEqual(document.user, self.user)
@@ -196,8 +200,8 @@ class InsertDataAPITests(RouterAPITestCase):
         self.assertEqual(Document.objects.count(), 1)
 
         document = Document.objects.get()
-        self.assertIn("already indexed", second.json()["data"])
-        self.assertIn(f"id={document.pk}", second.json()["data"])
+        self.assertEqual(second.json()["data"]["document_id"], document.pk)
+        self.assertEqual(second.json()["data"]["status"], "pending")
         self.build_index_task.delay.assert_called_once_with(
             document_id=document.pk,
             username="alice",
@@ -206,9 +210,8 @@ class InsertDataAPITests(RouterAPITestCase):
             runtime_token=None,
         )
 
-        # KNOWN (minor) BUG: the loader runs before the dedup check, so a
-        # duplicate upload still re-saves the file and re-parses the PDF.
-        self.assertEqual(self.loader.process_input.call_count, 2)
+        # Re-uploading existing content does not parse or save it again.
+        self.assertEqual(self.loader.process_input.call_count, 1)
 
     def test_different_content_creates_a_second_document(self):
         self._upload(content=b"first pdf bytes")
@@ -220,19 +223,15 @@ class InsertDataAPITests(RouterAPITestCase):
     def test_missing_file_is_rejected_without_creating_or_dispatching(self):
         resp = self.client.post(self.URL, {"USER": "alice"})
 
-        # KNOWN BUG: serializer validation should surface as a 400; the view's
-        # blanket `except Exception` turns the DRF ValidationError into a 500.
-        self.assertEqual(resp.status_code, 500)
-        self.assertIn("FILE", resp.json()["message"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("FILE", resp.json())
         self.assertFalse(Document.objects.exists())
         self.build_index_task.delay.assert_not_called()
 
     def test_upload_for_an_unknown_user_creates_nothing(self):
         resp = self._upload(username="ghost")
 
-        # KNOWN BUG: GuestUser.DoesNotExist is swallowed into a 500 instead of
-        # the 404 the frontend can act on.
-        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.status_code, 404)
         self.assertFalse(Document.objects.exists())
         self.build_index_task.delay.assert_not_called()
 
@@ -254,7 +253,7 @@ class InsertTextAPITests(RouterAPITestCase):
 
         self.assertEqual(resp.status_code, 200)
         # The pasted text itself is what gets handed to the loader.
-        self.loader.process_input.assert_called_once_with("some pasted notes", "alice")
+        self.loader.process_input.assert_called_once_with("some pasted notes", "alice", source_type="text")
 
         document = Document.objects.get()
         self.assertEqual(document.source_type, "text")
@@ -345,9 +344,8 @@ class InsertTextAPITests(RouterAPITestCase):
             self.URL, {"USER": "alice"}, content_type="application/json"
         )
 
-        # KNOWN BUG: should be a 400 (see InsertDataAPITests).
-        self.assertEqual(resp.status_code, 500)
-        self.assertIn("TEXT", resp.json()["message"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("TEXT", resp.json())
         self.assertFalse(Document.objects.exists())
         self.build_index_task.delay.assert_not_called()
 
@@ -368,7 +366,7 @@ class InsertURLAPITests(RouterAPITestCase):
 
         self.assertEqual(resp.status_code, 200)
         self.loader.process_input.assert_called_once_with(
-            "https://example.com/article", "alice"
+            "https://example.com/article", "alice", source_type="url"
         )
 
         document = Document.objects.get()
@@ -409,11 +407,8 @@ class InsertURLAPITests(RouterAPITestCase):
             content_type="application/json",
         )
 
-        # KNOWN BUG: should be a 400. The distinguishing detail from the test
-        # above is the message -- this one is real field validation, not the
-        # KeyError('FILE').
-        self.assertEqual(resp.status_code, 500)
-        self.assertIn("valid URL", resp.json()["message"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("valid URL", str(resp.json()["URL"]))
         self.assertFalse(Document.objects.exists())
 
 
@@ -477,13 +472,13 @@ class DocumentListAPITests(RouterAPITestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertIn("User not found", resp.json()["message"])
 
-    def test_user_with_no_documents_returns_a_404(self):
+    def test_user_with_no_documents_returns_an_empty_list(self):
         GuestUser.objects.create(email="carol@example.com", username="carol")
 
         resp = self.client.get(f"{API}/document/carol/")
 
-        self.assertEqual(resp.status_code, 404)
-        self.assertIn("Document not found", resp.json()["message"])
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["data"], [])
 
 
 class ConversationAPITests(RouterAPITestCase):
@@ -680,7 +675,7 @@ class QueryAPITests(RouterAPITestCase):
             ],
         )
 
-        placeholder = Conversation.objects.get(response="")
+        placeholder = Conversation.objects.get()
         self.assertEqual(self.engine.run.call_count, 1)
         args, kwargs = self.engine.run.call_args
         self.assertEqual(args, ("alice", "who wrote it?"))
@@ -734,29 +729,13 @@ class QueryAPITests(RouterAPITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.engine.run.call_args[1]["config"], DEFAULT_PIPELINE_CONFIG)
 
-    def test_every_query_also_stores_an_empty_placeholder_conversation(self):
+    def test_query_updates_its_placeholder_instead_of_creating_a_second_record(self):
         self.engine.run.return_value = dict(self.ENGINE_RESULT)
-
         resp = self._post()
-
-        # KNOWN BUG: save_conversation() is called once before the engine runs
-        # (to mint the conversation_id the pipeline streams status under) and
-        # again with the answer, so every query writes two Conversation rows and
-        # two ConversationHistory rows. Consequences: the blank placeholder shows
-        # up as an empty entry in /conversation-history/, and the
-        # conversation_id handed back to the browser is NOT the one the pipeline
-        # published its status events under.
-        self.assertEqual(Conversation.objects.count(), 2)
-        self.assertEqual(ConversationHistory.objects.count(), 2)
-
-        placeholder = Conversation.objects.get(response="")
-        self.assertEqual(
-            ConversationHistory.objects.filter(conversation=placeholder).count(), 1
-        )
-        self.assertNotEqual(
-            resp.json()["data"]["conversation_id"],
-            self.engine.run.call_args[1]["conversation_id"],
-        )
+        self.assertEqual(Conversation.objects.count(), 1)
+        self.assertEqual(ConversationHistory.objects.count(), 1)
+        self.assertEqual(resp.json()["data"]["conversation_id"], self.engine.run.call_args[1]["conversation_id"])
+        self.assertEqual(Conversation.objects.get().response, self.ENGINE_RESULT["answer"])
 
     def test_engine_failure_returns_the_json_error_envelope(self):
         self.engine.run.side_effect = RuntimeError("chroma down")
@@ -791,23 +770,21 @@ class QueryAPITests(RouterAPITestCase):
         # Guards against the autospec silently degrading into a tautology.
         self.assertEqual(
             engine.run.call_args[1]["conversation_id"],
-            Conversation.objects.get(response="").pk,
+            Conversation.objects.get().pk,
         )
 
     def test_missing_query_field_is_rejected_before_the_engine_runs(self):
         resp = self._post({"USER": "alice"})
 
-        # KNOWN BUG: should be a 400 (see InsertDataAPITests).
-        self.assertEqual(resp.status_code, 500)
-        self.assertIn("QUERY", resp.json()["message"])
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("QUERY", resp.json())
         self.engine.run.assert_not_called()
         self.assertEqual(Conversation.objects.count(), 0)
 
     def test_unknown_user_is_rejected_before_the_engine_runs(self):
         resp = self._post({"USER": "ghost", "QUERY": "who wrote it?"})
 
-        # KNOWN BUG: GuestUser.DoesNotExist -> 500 rather than 404.
-        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.status_code, 404)
         self.engine.run.assert_not_called()
         self.assertEqual(Conversation.objects.count(), 0)
 
@@ -824,6 +801,7 @@ class DeleteDocumentRouteTests(RouterAPITestCase):
             source_path="documents/alice/notes.pdf",
             extracted_text_path="documents/alice/extracted.txt",
             file_hash="a" * 64,
+            status="ready",
         )
 
     def test_the_document_the_sidebar_asks_to_delete_is_deleted(self):
@@ -862,8 +840,8 @@ class DeleteDocumentRouteTests(RouterAPITestCase):
         self.assertEqual(resp.status_code, 200)
         # The chunk ids, not the whole collection, are what gets dropped.
         self.get_chroma_client.return_value.delete.assert_called_once()
-        deleted_ids = self.get_chroma_client.return_value.delete.call_args.kwargs["ids"]
-        self.assertEqual(len(deleted_ids), 2)
+        self.get_chroma_client.return_value.delete.assert_called_once_with(where={"document_id": self.document.pk})
+        self.chroma_client.delete_collection.assert_called_once_with(collection.collection_name)
         self.assertFalse(
             DocumentChunk.objects.filter(document_id=self.document.pk).exists()
         )

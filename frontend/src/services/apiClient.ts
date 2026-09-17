@@ -1,6 +1,6 @@
 import axios, { AxiosError, AxiosRequestConfig } from "axios";
 
-const API_BASE = import.meta.env.VITE_API_URL || "/api";
+const API_BASE = (import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const API_VERSION = import.meta.env.VITE_API_VERSION || "v1";
 
 /** Maximum number of retries for transient failures. */
@@ -33,7 +33,7 @@ apiClient.interceptors.response.use(
 
         config._retryCount = config._retryCount ?? 0;
 
-        if (isRetryable(error) && config._retryCount < MAX_RETRIES) {
+        if (config.method?.toLowerCase() === "get" && isRetryable(error) && config._retryCount < MAX_RETRIES) {
             config._retryCount += 1;
             const delay = RETRY_BASE_DELAY_MS * Math.pow(2, config._retryCount - 1);
             await new Promise((res) => setTimeout(res, delay));

@@ -136,7 +136,7 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
         # Must not be reported as finished by a duplicate delivery.
         self.assertEqual(self._stored_status(), "indexing")
 
-    def test_document_with_existing_chunks_is_marked_ready_without_reindexing(self):
+    def test_existing_database_chunks_do_not_skip_recovering_the_vector_index(self):
         collection = UserCollection.objects.create(
             user=self.user, collection_name="user_alice_collection"
         )
@@ -153,9 +153,9 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
 
         result = self._call()
 
-        self.assertIsNone(result)
-        self.pipeline._build_index.assert_not_called()
-        self.get_registry.assert_not_called()
+        self.assertEqual(result["status"], "success")
+        self.pipeline._build_index.assert_called_once()
+        self.get_registry.assert_called_once()
         self.assertEqual(self._stored_status(), "ready")
 
     def test_failed_document_is_reindexed(self):
@@ -172,7 +172,7 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
         self.pipeline._build_index.assert_called_once()
         self.assertEqual(self._stored_status(), "ready")
 
-    def test_build_index_failure_marks_document_failed_and_requests_retry(self):
+    def test_build_index_failure_marks_document_pending_and_requests_retry(self):
         error = RuntimeError("chroma down")
         self.pipeline._build_index.side_effect = error
         retry = self._patch(
@@ -190,7 +190,7 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
         self.assertEqual(retry_kwargs["countdown"], 60)  # 60 * 2 ** 0 retries
         # The document must not be left stuck on "indexing", or every later
         # delivery would hit the duplicate guard and never index it.
-        self.assertEqual(self._stored_status(), "failed")
+        self.assertEqual(self._stored_status(), "pending")
 
     def test_an_unsupported_setting_fails_the_document_without_retrying(self):
         """A retry cannot fix a setting this deployment does not support.
@@ -231,3 +231,15 @@ class BuildIndexTaskTests(_PatchMixin, TestCase):
         # pointless - the task must re-raise instead.
         retry.assert_not_called()
         self.pipeline._build_index.assert_not_called()
+
+    def test_missing_api_key_fails_immediately_without_retrying(self):
+        from ai_handler.openrouter import MissingAPIKeyError
+
+        self.pipeline._build_index.side_effect = MissingAPIKeyError("Add an OpenRouter API key in settings.")
+        retry = self._patch(tasks.build_index_task, "retry")
+        with self.assertRaises(MissingAPIKeyError):
+            self._call()
+        retry.assert_not_called()
+        self.document.refresh_from_db()
+        self.assertEqual(self.document.status, "failed")
+        self.assertIn("API key", self.document.error_message)

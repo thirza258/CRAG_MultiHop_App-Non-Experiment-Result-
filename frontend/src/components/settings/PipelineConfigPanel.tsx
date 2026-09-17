@@ -14,7 +14,7 @@ import {
 } from "../../types/types";
 import ModelPicker from "./ModelPicker";
 import { NumberField, Section, Segmented, SegmentedOption, Toggle } from "./SettingsControls";
-import service from "../../services/service";
+import service, { DOCUMENTS_CHANGED } from "../../services/service";
 import {
   EMPTY_CATALOG,
   cachedCatalog,
@@ -111,11 +111,14 @@ const PipelineConfigPanel: React.FC = () => {
     const username = localStorage.getItem("username");
     if (!username) return;
     let cancelled = false;
-    service.getCorpusInfo(username).then((info) => {
+    const refresh = () => service.getCorpusInfo(username).then((info) => {
       if (!cancelled) setCorpusInfo(info);
     });
+    void refresh();
+    window.addEventListener(DOCUMENTS_CHANGED, refresh);
     return () => {
       cancelled = true;
+      window.removeEventListener(DOCUMENTS_CHANGED, refresh);
     };
   }, []);
 

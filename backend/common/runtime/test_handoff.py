@@ -12,6 +12,7 @@ Two properties matter here and neither is visible from the call site:
 
 import json
 import unittest
+from common.runtime.errors import UnsupportedConfiguration
 from unittest import mock
 
 from common.runtime import handoff as runtime_handoff
@@ -108,14 +109,12 @@ class StashGuardTests(unittest.TestCase):
 
 
 class StashFailureTests(unittest.TestCase):
-    def test_redis_being_down_does_not_fail_the_upload(self):
+    def test_redis_being_down_refuses_to_silently_change_upload_settings(self):
         fake = FakeRedis(fail=True)
         with mock.patch.object(runtime_handoff, "_client", return_value=fake):
-            token = runtime_handoff.stash_runtime(
-                RuntimeSettings(keys={"openrouter": "sk-or-v1-abc"})
-            )
-        self.assertIsNone(token)
-        self.assertTrue(fake.closed, "the connection is released even on failure")
+            with self.assertRaises(UnsupportedConfiguration):
+                runtime_handoff.stash_runtime(RuntimeSettings(keys={"openrouter": "sk-or-v1-abc"}))
+        self.assertTrue(fake.closed)
 
     def test_the_stored_payload_carries_the_key_but_the_log_line_does_not(self):
         fake = FakeRedis()
@@ -152,13 +151,13 @@ class LoadTests(unittest.TestCase):
         self.assertEqual(runtime_handoff.load_runtime(None), RuntimeSettings())
         self.assertEqual(runtime_handoff.load_runtime(""), RuntimeSettings())
 
-    def test_an_expired_entry_means_the_server_configuration(self):
-        loaded = self._load("gone", FakeRedis())
-        self.assertEqual(loaded, RuntimeSettings())
+    def test_expired_settings_require_resubmitting_the_document(self):
+        with self.assertRaises(UnsupportedConfiguration):
+            self._load("gone", FakeRedis())
 
-    def test_redis_being_down_means_the_server_configuration(self):
-        loaded = self._load("tok", FakeRedis(fail=True))
-        self.assertEqual(loaded, RuntimeSettings())
+    def test_unavailable_settings_do_not_change_the_model_or_key(self):
+        with self.assertRaises(UnsupportedConfiguration):
+            self._load("tok", FakeRedis(fail=True))
 
     def test_a_tampered_payload_is_re_validated_not_trusted(self):
         # The worker is a separate process reading a store it did not write.

@@ -7,7 +7,7 @@ Safe to run repeatedly:
 - Each model gets several attempts with exponential backoff, and
   `snapshot_download` resumes partially downloaded files.
 
-Runs standalone (no Django needed): `pip install huggingface-hub` then
+Runs standalone (no Django needed): `pip install huggingface-hub PyYAML` then
 `python dl_reranker_model.py`.
 """
 
@@ -20,9 +20,12 @@ from huggingface_hub import snapshot_download
 
 MODELS_DIR = Path(os.getenv("MODEL_CACHE_DIR", Path.cwd() / "models"))
 
+from rag.config import load_pipeline_config
+
+_pipeline_config = load_pipeline_config()
 HYBRID_RERANKER_LIST = [
-    "jinaai/jina-reranker-v3",
-    "intfloat/multilingual-e5-small",
+    _pipeline_config["hybrid_config"]["reranker_model"],
+    _pipeline_config["crag_config"]["evaluator_model"],
 ]
 
 MAX_ATTEMPTS = int(os.getenv("MODEL_DOWNLOAD_MAX_ATTEMPTS", "5"))
@@ -56,6 +59,10 @@ def download_model(model_id: str) -> bool:
             snapshot_download(
                 repo_id=model_id,
                 local_dir=str(local_dir),
+                # Inference uses PyTorch. Exported ONNX/OpenVINO/TensorFlow
+                # copies can multiply download size without being used.
+                ignore_patterns=["onnx/**", "openvino/**", "*.onnx", "*.onnx_data",
+                                 "tf_model.h5", "flax_model.msgpack", "rust_model.ot"],
             )
             _mark_complete(local_dir)
             print(f"[done] {model_id}")

@@ -20,7 +20,7 @@ class CRAGEvaluator:
     def __init__(self, config):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        MODEL_NAME = "intfloat/multilingual-e5-small"
+        MODEL_NAME = config.get("evaluator_model", "intfloat/multilingual-e5-small")
         model_path = _local_model_path(MODEL_NAME)
         
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)

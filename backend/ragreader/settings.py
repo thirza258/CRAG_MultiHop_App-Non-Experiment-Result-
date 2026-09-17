@@ -148,6 +148,8 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 # Prefetch one task at a time — prevents one worker from hoarding all
 # pending messages when the pipeline is CPU-heavy.
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+# Each process imports the ML stack. Avoid allocating one per host CPU by default.
+CELERY_WORKER_CONCURRENCY = int(os.getenv("CELERY_WORKER_CONCURRENCY", "2"))
 
 CHANNEL_LAYERS = {
     "default": {

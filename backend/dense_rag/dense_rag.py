@@ -68,7 +68,7 @@ class DenseRAG:
         """
         return resolve_embedding_model(self.embedding_model)
 
-    def _get_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    def _get_embeddings(self, texts: List[str], batch_size: int = 100, *, fail_on_error: bool = False) -> List[List[float]]:
         try:
             # Callers (_build_index) align embeddings with their
             # input positionally, so coerce odd entries instead of dropping them.
@@ -104,6 +104,8 @@ class DenseRAG:
         try:
             client = self.client
         except MissingAPIKeyError as e:
+            if fail_on_error:
+                raise
             # No key at all: callers already treat an empty embedding list as
             # "retrieval found nothing", which the pipeline reports honestly.
             logger.error(f"[DENSE] Cannot embed — {e}")
@@ -130,6 +132,8 @@ class DenseRAG:
                 logger.info(f"[DENSE] Embedded batch {i // batch_size + 1} / {ceil(len(cleaned_texts) / batch_size)}")
 
             except Exception as e:
+                if fail_on_error:
+                    raise
                 logger.error(
                     f"[DENSE] Error fetching embeddings for batch {i // batch_size}: "
                     f"{api_keys_module.scrub(str(e), request_secrets())}"
@@ -238,4 +242,3 @@ class DenseRAG:
         
     def set_emitter(self, emitter):
         self.emitter = emitter
-        

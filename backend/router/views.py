@@ -1,16 +1,12 @@
-import json
-import threading
-import uuid
 import logging
 
-from django.db import transaction, IntegrityError
-from django.core.cache import cache
-import redis
+from django.db import transaction
 from rest_framework.views import APIView
 from rest_framework.generics import GenericAPIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import ValidationError
 from ai_handler import model_catalog
 from common.memory import compute_file_hash, compute_text_hash
 from common.runtime import api_keys as api_keys_module
@@ -21,12 +17,14 @@ from common.runtime.handoff import stash_runtime
 from utils.insert_file import get_loader
 from router.models import (
     Document,
+    ChromaCollection,
     GuestUser,
     Conversation, ConversationHistory, UserCollection, DocumentChunk
 )
 from router.tasks import build_index_task
 
 from rag.rag_service import get_registry
+from rag.config import load_pipeline_config
 from router.serializers import (
     InsertDataSerializer, 
     InsertTextSerializer, 
@@ -44,8 +42,8 @@ def _runtime_token(serializer):
     """Stash this request's model choice and API keys for the indexing worker.
 
     Returns a token to hand to ``build_index_task``, or None when there is
-    nothing to hand over (or Redis is unavailable) — the worker then uses the
-    server's own configuration, exactly as indexing always did.
+    nothing to hand over. A failed handoff rejects the upload rather than
+    silently changing its settings.
 
     Only the embedding model really matters here: it decides which vector space
     the document lands in, and a collection can only hold one.
@@ -55,227 +53,96 @@ def _runtime_token(serializer):
     return stash_runtime(RuntimeSettings.from_wire(config, keys))
 
 
-class InsertDataView(GenericAPIView):
+def document_payload(document):
+    return {
+        "document_id": document.pk,
+        "id": document.pk,
+        "name": document.name,
+        "status": document.status,
+        "error_message": document.error_message,
+    }
+
+
+class InsertContentView(GenericAPIView):
+    """Persist content and return its indexing job, not a fabricated chat answer."""
+    input_field = "TEXT"
+    source_type = "text"
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        username = serializer.validated_data["USER"]
+        source = serializer.validated_data[self.input_field]
+        keys = normalize_api_keys(serializer.validated_data.get("KEYS"))
+        try:
+            user = GuestUser.objects.get(username=username)
+        except GuestUser.DoesNotExist:
+            return get_responses().response_404(error="User not found. Please sign in again.")
+
+        file_hash = compute_file_hash(source) if self.input_field == "FILE" else compute_text_hash(source)
+        try:
+            # Lock the existing document so two retries cannot enqueue it twice.
+            with transaction.atomic():
+                document = Document.objects.select_for_update().filter(
+                    user=user, file_hash=file_hash
+                ).first()
+                if document and document.status in {"ready", "pending", "indexing"}:
+                    return get_responses().response_200(document_payload(document))
+
+                if document is None:
+                    data = get_loader().process_input(source, username, source_type=self.source_type)
+                    document, created = Document.objects.get_or_create(
+                        user=user, file_hash=file_hash,
+                        defaults={
+                            "name": data.get("filename") or data.get("name") or "Text document",
+                            "source_type": data.get("source_type", "pdf") if self.input_field == "FILE" else self.source_type,
+                            "source_path": data["source_path"],
+                            "extracted_text_path": data["text_path"],
+                            "status": "pending",
+                        },
+                    )
+                    if not created:
+                        return get_responses().response_200(document_payload(document))
+                else:
+                    document.status = "pending"
+                    document.error_message = ""
+                    document.save(update_fields=["status", "error_message", "updated_at"])
+
+            try:
+                build_index_task.delay(
+                    document_id=document.pk, username=username,
+                    runtime_token=_runtime_token(serializer),
+                )
+            except Exception:
+                logger.exception("Could not start indexing document %s", document.pk)
+                document.status = "failed"
+                document.error_message = "Indexing could not be started. Check the worker and Redis, then upload again."
+                document.save(update_fields=["status", "error_message", "updated_at"])
+                return get_responses().response_500(error=document.error_message)
+            return get_responses().response_200(document_payload(document))
+        except ValueError as exc:
+            return get_responses().response_400(error=api_keys_module.scrub(str(exc), keys))
+        except Exception as exc:
+            return get_responses().response_500(error=api_keys_module.scrub(str(exc), keys))
+
+
+class InsertDataView(InsertContentView):
     serializer_class = InsertDataSerializer
     parser_classes = [MultiPartParser, FormParser]
+    input_field = "FILE"
+    source_type = "file"
 
-    def post(self, request):
-        try:
-            serializer = self.get_serializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
 
-            username = serializer.validated_data["USER"]
-            file = serializer.validated_data["FILE"]
-
-            user = GuestUser.objects.get(username=username)
-
-            file_hash = compute_file_hash(file)
-
-            data = get_loader().process_input(file, username)
-
-            try:
-                with transaction.atomic():
-                    document, created = Document.objects.get_or_create(
-                        user=user,
-                        file_hash=file_hash,
-                        defaults={
-                            "name": data["filename"],
-                            "source_type": "pdf",
-                            "source_path": data["source_path"],
-                            "extracted_text_path": data["text_path"],
-                            "status": "pending",
-                        }
-                    )
-
-            except IntegrityError:
-                document = Document.objects.get(
-                    user=user,
-                    file_hash=file_hash
-                )
-                created = False
-
-            if not created:
-                return get_responses().response_200(
-                    f"Document already indexed "
-                    f"(id={document.pk}, status={document.status})"
-                )
-
-            try:
-                task = build_index_task.delay(
-                    document_id=document.pk,
-                    username=username,
-                    runtime_token=_runtime_token(serializer),
-                )
-            except Exception as exc:
-                logger.error(
-                    "[%s] Failed to enqueue indexing task for document %s: %s",
-                    self.__class__.__name__, document.pk, exc,
-                    exc_info=True,
-                )
-                # Mark the document so the user can see something went wrong
-                # and the sidebar doesn't show it stuck on "pending" forever.
-                document.status = "failed"
-                document.save(update_fields=["status"])
-                return get_responses().response_500(
-                    error="Background indexing could not be started. "
-                          "Please try again in a moment."
-                )
-
-            return get_responses().response_200(
-                "Data inserted successfully!"
-            )
-
-        except Exception as e:
-            return get_responses().response_500(error=str(e))
-
-class InsertURLView(GenericAPIView):
+class InsertURLView(InsertContentView):
     serializer_class = InsertURLSerializer
+    input_field = "URL"
+    source_type = "url"
 
-    def post(self, request):
-        try:
-            serializer = self.get_serializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
 
-            username = serializer.validated_data["USER"]
-            # Reads URL, not FILE: this view's serializer has no FILE field, so the
-            # old lookup raised KeyError and every URL submission became a 500.
-            url = serializer.validated_data["URL"]
-
-            user = GuestUser.objects.get(username=username)
-
-            file_hash = compute_text_hash(url)
-
-            data = get_loader().process_input(url, username)
-
-            try:
-                with transaction.atomic():
-                    document, created = Document.objects.get_or_create(
-                        user=user,
-                        file_hash=file_hash,
-                        defaults={
-                            "name": data["name"],
-                            "source_type": data["source_type"],
-                            "source_path": data["source_path"],
-                            "extracted_text_path": data["text_path"],
-                            "status": "pending",
-                        }
-                    )
-
-            except IntegrityError:
-                document = Document.objects.get(
-                    user=user,
-                    file_hash=file_hash
-                )
-                created = False
-
-            if not created:
-                return get_responses().response_200(
-                    f"Document already indexed "
-                    f"(id={document.pk}, status={document.status})"
-                )
-
-            try:
-                task = build_index_task.delay(
-                    document_id=document.pk,
-                    username=username,
-                    runtime_token=_runtime_token(serializer),
-                )
-            except Exception as exc:
-                logger.error(
-                    "[%s] Failed to enqueue indexing task for document %s: %s",
-                    self.__class__.__name__, document.pk, exc,
-                    exc_info=True,
-                )
-                # Mark the document so the user can see something went wrong
-                # and the sidebar doesn't show it stuck on "pending" forever.
-                document.status = "failed"
-                document.save(update_fields=["status"])
-                return get_responses().response_500(
-                    error="Background indexing could not be started. "
-                          "Please try again in a moment."
-                )
-
-            return get_responses().response_200(
-                "Data inserted successfully!"
-            )
-
-        except Exception as e:
-            return get_responses().response_500(error=str(e))
-
-class InsertTextView(GenericAPIView):
+class InsertTextView(InsertContentView):
     serializer_class = InsertTextSerializer
 
-    def post(self, request):
-        try:
-            serializer = self.get_serializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
 
-            username = serializer.validated_data["USER"]
-            # Reads TEXT, not FILE — same defect as InsertURLView: the serializer
-            # defines TEXT, so the old lookup made every paste a 500.
-            text = serializer.validated_data["TEXT"]
-
-            user = GuestUser.objects.get(username=username)
-
-            file_hash = compute_text_hash(text)
-
-            data = get_loader().process_input(text, username)
-
-            try:
-                with transaction.atomic():
-                    document, created = Document.objects.get_or_create(
-                        user=user,
-                        file_hash=file_hash,
-                        defaults={
-                            "name": data["name"],
-                            "source_type": "text",
-                            "source_path": data["source_path"],
-                            "extracted_text_path": data["text_path"],
-                            "status": "pending",
-                        }
-                    )
-
-            except IntegrityError:
-                document = Document.objects.get(
-                    user=user,
-                    file_hash=file_hash
-                )
-                created = False
-
-            if not created:
-                return get_responses().response_200(
-                    f"Document already indexed "
-                    f"(id={document.pk}, status={document.status})"
-                )
-
-            try:
-                task = build_index_task.delay(
-                    document_id=document.pk,
-                    username=username,
-                    runtime_token=_runtime_token(serializer),
-                )
-            except Exception as exc:
-                logger.error(
-                    "[%s] Failed to enqueue indexing task for document %s: %s",
-                    self.__class__.__name__, document.pk, exc,
-                    exc_info=True,
-                )
-                # Mark the document so the user can see something went wrong
-                # and the sidebar doesn't show it stuck on "pending" forever.
-                document.status = "failed"
-                document.save(update_fields=["status"])
-                return get_responses().response_500(
-                    error="Background indexing could not be started. "
-                          "Please try again in a moment."
-                )
-
-            return get_responses().response_200(
-                "Data inserted successfully!"
-            )
-
-        except Exception as e:
-            return get_responses().response_500(error=str(e))
-        
 class DocumentView(APIView):
     def get(self, request, username):
         try:
@@ -284,15 +151,12 @@ class DocumentView(APIView):
                 return get_responses().response_404(error="User not found")
             
             documents = Document.objects.filter(user=user)
-            if not documents.exists():
-                return get_responses().response_404(error="Document not found for user")
             
             data = [{
-                "id": document.pk,
-                "name": document.name,
+                **document_payload(document),
                 "source_type": document.source_type,
                 "source_path": document.source_path,
-                "extracted_text_path": document.extracted_text_path[:100],
+                "extracted_text_path": (document.extracted_text_path or "")[:100],
                 "created_at": document.created_at
             } for document in documents]
             return get_responses().response_200(response=data)
@@ -355,9 +219,9 @@ class CorpusInfoView(APIView):
         configured = ""
         base_name = self.FALLBACK_BASE_COLLECTION
         try:
-            engine = get_registry().get_engine()
-            configured = engine._configured_embedding_model()
-            base_name = engine._dataset_collection_name()
+            config = load_pipeline_config()
+            configured = config["dense_config"]["embedding_model"]
+            base_name = config["collection_name"]
         except Exception as e:
             # The panel is still useful without this; a pipeline that will not
             # start is reported by the health endpoint, not here.
@@ -482,11 +346,16 @@ class QueryView(GenericAPIView):
                 doc["text"] if isinstance(doc, dict) else doc
                 for doc in retrieved_chunks
             )
-            answer_record = self.save_conversation(username, query, llm_answer, context_str)
-            
-            answer["conversation_id"] = answer_record.pk
+            conversation.response = llm_answer
+            conversation.context = context_str
+            conversation.save(update_fields=["response", "context", "updated_at"])
+            answer["conversation_id"] = conversation.pk
             
             return get_responses().response_200(response=answer)
+        except ValidationError:
+            raise
+        except GuestUser.DoesNotExist:
+            return get_responses().response_404(error="User not found. Please sign in again.")
         except Exception as e:
                 # Provider SDKs quote the failing request, Authorization header
                 # included, into their exception messages — and this one is
@@ -496,39 +365,39 @@ class QueryView(GenericAPIView):
                 )
         
 class DeleteDocumentView(GenericAPIView):
+    def get(self, request, document_id, username):
+        try:
+            document = Document.objects.get(pk=document_id, user__username=username)
+            return get_responses().response_200(document_payload(document))
+        except (Document.DoesNotExist, ValueError):
+            return get_responses().response_404(error="Document not found")
+
     def delete(self, request, document_id, username):
         try:
-            document = Document.objects.get(pk=document_id)
-            user_collection = UserCollection.objects.get(user__username=username)
-
-            chunk_records = DocumentChunk.objects.filter(
-                document=document,
-                user_collection=user_collection
-            )
-            chroma_ids = list(chunk_records.values_list("chroma_id", flat=True))
-
-            if chroma_ids:
-                collection = get_chroma_client(collection_name=user_collection.collection_name)
-                collection.delete(ids=chroma_ids)
-
-                deleted_count = len(chroma_ids)
-                user_collection.chunk_count = max(0, user_collection.chunk_count - deleted_count)
-
-                if user_collection.chunk_count == 0:
-                    # The collection is empty, so it is no longer pinned to a
-                    # vector space. Clearing the record is what lets the user
-                    # pick a different embedding model — the next document they
-                    # index adopts their current choice. Without this, the model
-                    # would stay locked forever after the first upload.
-                    user_collection.embedding_model = ""
-
-                user_collection.save()
-                chunk_records.delete()
-            document.delete()
+            with transaction.atomic():
+                document = Document.objects.select_for_update().get(
+                    pk=document_id, user__username=username
+                )
+                if document.status in {"pending", "indexing"}:
+                    return get_responses().response_400(error="Wait for indexing to finish before deleting this document.")
+                user_collection = UserCollection.objects.select_for_update().filter(
+                    user=document.user
+                ).first()
+                if user_collection:
+                    collection = get_chroma_client(collection_name=user_collection.collection_name)
+                    # Metadata also removes chunks written by older versions with random IDs.
+                    collection.delete(where={"document_id": document.pk})
+                    DocumentChunk.objects.filter(document=document).delete()
+                    user_collection.chunk_count = user_collection.chunks.count()
+                    if not user_collection.chunk_count:
+                        # Deleting rows alone leaves Chroma's vector dimension pinned.
+                        from chroma.chroma_settings import get_client
+                        get_client().delete_collection(user_collection.collection_name)
+                        user_collection.embedding_model = ""
+                    user_collection.save(update_fields=["chunk_count", "embedding_model", "updated_at"])
+                document.delete()
             return get_responses().response_200(response="Document and associated chunks deleted successfully")
-        except Document.DoesNotExist:
+        except (Document.DoesNotExist, ValueError):
             return get_responses().response_404(error="Document not found")
-        except UserCollection.DoesNotExist:
-            return get_responses().response_404(error="User collection not found")
-        except Exception as e:
-            return get_responses().response_500(error=str(e))
+        except Exception as exc:
+            return get_responses().response_500(error=str(exc))

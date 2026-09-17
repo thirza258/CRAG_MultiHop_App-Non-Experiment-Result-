@@ -25,7 +25,8 @@ class DataLoader:
     @staticmethod
     def process_input(
         source: Union[str, UploadedFile],
-        username: str
+        username: str,
+        source_type: str = None,
     ) -> dict:
         """
         Returns:
@@ -38,34 +39,41 @@ class DataLoader:
 
         base_path = _document_base_path(username)
 
-        # ---------- PDF Upload ----------
+        # ---------- File Upload ----------
         if isinstance(source, UploadedFile):
             filename = get_valid_filename(source.name)
-            pdf_path = f"{base_path}/{filename}"
-
-            default_storage.save(pdf_path, source)
-
-            text = DataLoader._parse_pdf(
-                default_storage.path(pdf_path)
-            )
-
-            text_path = DataLoader._save_text(base_path, text)
+            extension = os.path.splitext(filename)[1].lower()
+            if extension not in {".pdf", ".txt", ".md"}:
+                raise ValueError("Upload a PDF, TXT, or Markdown file.")
+            stored_path = default_storage.save(f"{base_path}/{filename}", source)
+            try:
+                if extension == ".pdf":
+                    text = DataLoader._parse_pdf(default_storage.path(stored_path))
+                else:
+                    with default_storage.open(stored_path, "rb") as uploaded:
+                        text = uploaded.read().decode("utf-8-sig").strip()
+                text_path = DataLoader._save_text(base_path, text)
+            except Exception as exc:
+                default_storage.delete(stored_path)
+                raise ValueError(
+                    "Could not read this file. Use a PDF with selectable text or a UTF-8 text file."
+                ) from exc
 
             return {
                 "user": username,
                 "text": text,
-                "source_path": pdf_path,
+                "source_path": stored_path,
                 "text_path": text_path,
                 "filename": filename,   
-                "source_type": "pdf",
+                "source_type": "pdf" if extension == ".pdf" else "text",
             }
 
         # ---------- URL ----------
-        if isinstance(source, str) and source.startswith(("http://", "https://")):
+        if source_type != "text" and isinstance(source, str) and source.startswith(("http://", "https://")):
             html = DataLoader._fetch_url(source)
 
             html_path = f"{base_path}/source.html"
-            default_storage.save(html_path, ContentFile(html))
+            html_path = default_storage.save(html_path, ContentFile(html))
 
             text = DataLoader._extract_text_from_html(html)
             text_path = DataLoader._save_text(base_path, text)
@@ -80,7 +88,7 @@ class DataLoader:
             }
 
         # ---------- Local PDF Path ----------
-        if isinstance(source, str) and source.lower().endswith(".pdf"):
+        if source_type is None and isinstance(source, str) and source.lower().endswith(".pdf"):
             text = DataLoader._parse_pdf(source)
             text_path = DataLoader._save_text(base_path, text)
 
@@ -135,9 +143,10 @@ class DataLoader:
 
     @staticmethod
     def _save_text(base_path: str, text: str) -> str:
+        if not text or not text.strip():
+            raise ValueError("No readable text found. Scanned PDFs need OCR before uploading.")
         path = f"{base_path}/extracted.txt"
-        default_storage.save(path, ContentFile(text))
-        return path
+        return default_storage.save(path, ContentFile(text))
 
     @staticmethod
     def _clean_text(text: str) -> str:

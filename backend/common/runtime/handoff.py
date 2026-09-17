@@ -8,9 +8,9 @@ result backend, re-enqueued verbatim on every retry, and rendered into Celery's
 own log lines when a task fails. Credentials should not be in any of those.
 
 So the settings are written to one short-lived Redis entry under a random token,
-and the task receives only the token. Losing the entry is not an error — the
-worker then falls back to the server's own configuration, which is exactly the
-behaviour indexing had before users could bring their own keys.
+and the task receives only the token. A missing entry for an issued token fails
+explicitly: changing the model, chunking strategy or billing key silently would
+violate the upload request.
 
 The entry is read rather than consumed, because ``build_index_task`` retries with
 backoff and each attempt needs it. Expiry does the cleanup.
@@ -25,6 +25,7 @@ import redis
 
 from common.runtime.config import is_default, normalize_pipeline_config
 from common.runtime.context import RuntimeSettings
+from common.runtime.errors import UnsupportedConfiguration
 from ragreader.settings import REDIS_HOST, REDIS_PORT
 
 logger = logging.getLogger(__name__)
@@ -53,10 +54,8 @@ def _client():
 def stash_runtime(settings: RuntimeSettings):
     """Store ``settings`` and return a token, or None if there is nothing to store.
 
-    Returns None both when the request expressed no preferences (nothing to hand
-    over) and when Redis is unavailable — the caller passes the token through
-    unconditionally and the worker treats a missing one as "use the server's
-    configuration".
+    Returns None only when no preferences need handing over. An unavailable
+    handoff raises, so indexing never silently changes the user's choices.
     """
     if not isinstance(settings, RuntimeSettings):
         return None
@@ -89,11 +88,10 @@ def stash_runtime(settings: RuntimeSettings):
         return token
     except Exception as e:
         logger.warning(
-            "[RuntimeHandoff] could not stash request settings, the worker will "
-            "use the server configuration: %s",
+            "[RuntimeHandoff] could not preserve request settings: %s",
             e,
         )
-        return None
+        raise UnsupportedConfiguration("Could not preserve your upload settings. Please retry when Redis is available.") from e
     finally:
         if client is not None:
             try:
@@ -103,11 +101,7 @@ def stash_runtime(settings: RuntimeSettings):
 
 
 def load_runtime(token) -> RuntimeSettings:
-    """The settings for ``token``, or empty defaults when unavailable.
-
-    Never raises: a background job must not fail because a bookkeeping lookup
-    did. Empty defaults mean the worker's environment applies.
-    """
+    """Load an issued token exactly; absent tokens alone use server defaults."""
     if not token or not isinstance(token, str):
         return RuntimeSettings()
 
@@ -117,22 +111,22 @@ def load_runtime(token) -> RuntimeSettings:
         raw = client.get(f"{_KEY_PREFIX}{token}")
         if raw is None:
             logger.info(
-                "[RuntimeHandoff] no stashed settings for this task (expired?) — "
-                "using the server configuration"
+                "[RuntimeHandoff] upload settings expired"
             )
-            return RuntimeSettings()
+            raise UnsupportedConfiguration("Upload settings expired. Please upload the document again.")
         settings = RuntimeSettings.from_dict(json.loads(raw))
         # RuntimeSettings cannot import the config schema without a cycle, so
         # the params it carries are re-validated here — the worker is a
         # separate process and must not trust a payload it did not build.
         return replace(settings, params=normalize_pipeline_config(settings.params))
+    except UnsupportedConfiguration:
+        raise
     except Exception as e:
         logger.warning(
-            "[RuntimeHandoff] could not load stashed settings, using the server "
-            "configuration: %s",
+            "[RuntimeHandoff] could not load upload settings: %s",
             e,
         )
-        return RuntimeSettings()
+        raise UnsupportedConfiguration("Could not load your upload settings. Please upload the document again.") from e
     finally:
         if client is not None:
             try:

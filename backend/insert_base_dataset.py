@@ -32,7 +32,10 @@ django.setup()
 import chromadb
 import pandas as pd
 
-CHROMA_COLLECTION_NAME = "ragreader_collection"
+from rag.config import load_pipeline_config
+
+_PIPELINE_CONFIG = load_pipeline_config()
+CHROMA_COLLECTION_NAME = _PIPELINE_CONFIG["collection_name"]
 
 CORPUS_DIR = Path("corpus")
 CORPUS_FILE = CORPUS_DIR / "corpus.json"
@@ -121,7 +124,7 @@ def ensure_corpus_exists() -> pd.DataFrame:
 #: retrieval to whatever a collection was indexed with, so changing this means
 #: re-indexing the corpus from scratch — a query embedded by a different model
 #: is a comparison across vector spaces.
-BASE_EMBEDDING_MODEL = "google/gemini-embedding-2-preview"
+BASE_EMBEDDING_MODEL = _PIPELINE_CONFIG["dense_config"]["embedding_model"]
 
 
 def _record_collection(embedding_model: str, chunk_count: int) -> None:

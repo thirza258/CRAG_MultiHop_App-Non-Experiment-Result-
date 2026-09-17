@@ -39,10 +39,17 @@ def insert_chunk_to_chromadb(
     chunks: List[str],
     metadata: List[Dict[str, str]],
     embeddings: List[List[float]] = None,
-    batch_size: int = 100
+    batch_size: int = 100,
+    ids: List[str] = None,
 ) -> bool:
     
     try:
+        if not chunks or len(metadata) != len(chunks):
+            raise ValueError("Chunks and metadata must be nonempty and aligned.")
+        if ids is not None and len(ids) != len(chunks):
+            raise ValueError("Chunk IDs must match the chunks.")
+        if embeddings is not None and len(embeddings) != len(chunks):
+            raise ValueError("Embeddings must match the chunks.")
         collection = get_client().get_or_create_collection(
             name=collection_name,
             embedding_function=None
@@ -56,7 +63,7 @@ def insert_chunk_to_chromadb(
 
             batch_chunks = chunks[i:i + batch_size]
             batch_metadatas = metadata[i:i + batch_size]
-            batch_ids = [str(uuid.uuid4()) for _ in batch_chunks]
+            batch_ids = ids[i:i + batch_size] if ids is not None else [str(uuid.uuid4()) for _ in batch_chunks]
 
             add_kwargs = {
                 "ids": batch_ids,
@@ -68,7 +75,7 @@ def insert_chunk_to_chromadb(
                 add_kwargs["embeddings"] = embeddings[i:i + batch_size]
 
             try:
-                collection.add(**add_kwargs)
+                collection.upsert(**add_kwargs)
 
                 print(f"[OK] Inserted batch {batch_num}/{total_batches}")
 

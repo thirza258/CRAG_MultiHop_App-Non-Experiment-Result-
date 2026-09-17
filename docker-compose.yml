@@ -22,6 +22,7 @@ services:
       - MODEL_CACHE_DIR=/app/models
     volumes:
       - ./backend/models:/app/models
+      - ./backend/config.yml:/app/config.yml:ro
       - media:/app/media
       - vectorstores:/app/vector_stores
     command: ["daphne", "-b", "0.0.0.0", "-p", "8000", "ragreader.asgi:application"]
@@ -55,11 +56,11 @@ services:
       - ./backend/.env
     environment:
       - MODEL_CACHE_DIR=/app/models
-      # The backend container owns migrations, dataset insert and model
-      # download — the worker only waits for the shared model volume.
+      # The backend owns initialization; its health check gates this worker.
       - SKIP_INIT=1
     volumes:
       - ./backend/models:/app/models
+      - ./backend/config.yml:/app/config.yml:ro
       - media:/app/media
       - vectorstores:/app/vector_stores
     restart: unless-stopped
@@ -80,8 +81,6 @@ services:
     depends_on:
       backend:
         condition: service_started
-    env_file:
-      - ./frontend/.env
     restart: unless-stopped
 
   redis:

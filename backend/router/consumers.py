@@ -2,6 +2,8 @@ import json
 import asyncio
 import logging
 import threading
+import time
+from django.db import close_old_connections
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
@@ -49,7 +51,7 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             pipeline_config = normalize_pipeline_config(data.get("CONFIG"))
             api_keys = normalize_api_keys(data.get("KEYS"))
 
-            if not username or not query:
+            if not isinstance(username, str) or not username.strip() or not isinstance(query, str) or not query.strip():
                 await self.send(json.dumps({
                     "stage": "error", "message": "USER and QUERY required"
                 }))
@@ -75,6 +77,7 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             logger.info(f"Subscribed to Redis channel: rag:status:{task_id}")
 
             def run():
+                close_old_connections()
                 # Created outside the try so the except block can always
                 # publish the error back to the websocket loop.
                 r_sync = redis.Redis(
@@ -131,6 +134,7 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                             f"Failed to publish error for task {task_id}: {pub_err}"
                         )
                 finally:
+                    close_old_connections()
                     try:
                         r_sync.close()
                     except Exception:
@@ -141,10 +145,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
             t.start()
             logger.info("RAG pipeline thread started")
            
-            elapsed = 0.0
+            deadline = time.monotonic() + _PIPELINE_TIMEOUT
             finished = False
 
-            while elapsed < _PIPELINE_TIMEOUT:
+            while time.monotonic() < deadline:
                 try:
                     message = await pubsub.get_message(
                         ignore_subscribe_messages=True, timeout=1.0
@@ -154,12 +158,10 @@ class QueryStreamConsumer(AsyncWebsocketConsumer):
                         f"Redis poll error (task {task_id}): {poll_err}"
                     )
                     await asyncio.sleep(_POLL_INTERVAL)
-                    elapsed += _POLL_INTERVAL
                     continue
 
                 if message is None:
                     await asyncio.sleep(_POLL_INTERVAL)
-                    elapsed += _POLL_INTERVAL
                     continue
 
                 logger.info(f"Got Redis message: {message}")

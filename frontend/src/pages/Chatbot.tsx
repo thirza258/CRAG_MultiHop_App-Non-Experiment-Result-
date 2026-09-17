@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import service from "../services/service";
-import { ChatResponse } from "../interface";
+import service, { documentsChanged, errorMessage, HISTORY_CHANGED } from "../services/service";
+import { UploadResponse } from "../interface";
 import { ChatMessage } from "../components/ui/chatmessage";
 import { Message, SubmitPayload } from "../types/types";
 import FileUploadSection from "../components/file/FileInput";
 import UrlUploadSection from "../components/file/URLInput";
 import TextUploadSection from "../components/file/TextInput";
 import { useNavigate } from "react-router-dom";
-import { generateChatStream } from "../services/websocket";
+import { generateChatStream, ChatStream } from "../services/websocket";
 import { useSeo } from "../lib/seo";
 import { usePipelineConfig } from "../context/PipelineConfigContext";
 import { useApiKeys } from "../context/ApiKeysContext";
@@ -23,11 +23,12 @@ function Chatbot() {
   const [modalSubmitting, setModalSubmitting] = useState<boolean>(false);
   const [statusText, setStatusText] = useState<string>("");
 
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<ChatStream | null>(null);
+  const uploadRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const navigate = useNavigate();
-  const { config: pipelineConfig } = usePipelineConfig();
+  const { config: pipelineConfig, setConfig } = usePipelineConfig();
   const { keysForRequest } = useApiKeys();
 
   // sendMessage runs inside websocket callbacks, so read the live config from a
@@ -52,7 +53,7 @@ function Chatbot() {
     if (!username) {
       navigate("/login");
     }
-  }, []);
+  }, [navigate]);
 
   const resetModalInputs = () => {
     setFileLocal(null);
@@ -62,7 +63,7 @@ function Chatbot() {
   };
 
   const sendMessage = (): void => {
-  if (!input.trim() || chatLoading) return;
+  if (!input.trim() || chatLoading || modalSubmitting) return;
 
   // close any existing connection first
   if (wsRef.current) {
@@ -85,16 +86,16 @@ function Chatbot() {
     // onResult
     (msg) => {
       sessionStorage.removeItem(`chat_history_${username}`);
+      window.dispatchEvent(new Event(HISTORY_CHANGED));
       setMessages((prev) => [...prev, {
         user: "bot",
         text: msg.answer,
         conversationId: msg.conversation_id?.toString(),
-        documentId: msg.document_id?.toString(),
         context: msg.context || [],
-        evaluation: msg.evaluation || null,
+        evaluation: msg.evaluation,
         // Settings the pipeline overrode for this answer, e.g. the embedding
         // model the searched corpus is actually indexed with.
-        notices: Array.isArray(msg.notices) ? msg.notices : [],
+        notices: [...(msg.notices || []), ...(msg.degraded?.length ? [`Some stages were unavailable: ${msg.degraded.join(", ")}.`] : [])],
       }]);
       console.log("Final answer received:", msg.answer);
       console.log("Evaluation received:", msg.evaluation);
@@ -122,6 +123,7 @@ function Chatbot() {
 useEffect(() => {
   return () => {
     wsRef.current?.close();
+    uploadRef.current?.abort();
   };
 }, []);
 
@@ -155,7 +157,7 @@ useEffect(() => {
   };
 
   const handleModalSubmit = async () => {
-    if (!fileLocal && !url && !textInput) {
+    if (!fileLocal && !url.trim() && !textInput.trim()) {
       alert("Please upload a file, enter a URL, or paste text.");
       return;
     }
@@ -184,8 +186,10 @@ useEffect(() => {
     setMessages((prev) => [...prev, userMessage]);
 
     setIsModalOpen(false);
-    resetModalInputs();
     setModalSubmitting(true);
+    setStatusText("Uploading document…");
+    const controller = new AbortController();
+    uploadRef.current = controller;
 
     try {
       const username = localStorage.getItem("username") || "";
@@ -196,7 +200,7 @@ useEffect(() => {
         keys: keysRef.current(),
       };
 
-      let response: ChatResponse;
+      let response: UploadResponse;
 
       switch (payload.type) {
         case "file":
@@ -215,33 +219,29 @@ useEffect(() => {
           throw new Error("Invalid payload type");
       }
 
-      if (response.status !== 200) {
-        throw new Error(response.message);
-      }
-
-      sessionStorage.removeItem(`chat_history_${username}`);
-
-      const botMessage: Message = {
+      if (response.status !== 200) throw new Error(response.message);
+      if (controller.signal.aborted) return;
+      documentsChanged();
+      await service.waitForDocument(response.data, username, (document) => {
+        setStatusText(document.status === "pending" ? "Waiting for indexing to start…" : "Indexing your document…");
+      }, controller.signal);
+      // An upload makes the intent to chat with the user's documents explicit.
+      setConfig({ corpus: "user" });
+      documentsChanged();
+      resetModalInputs();
+      setMessages((prev) => [...prev, {
         user: "bot",
-        text: response.data.answer,
-        conversationId: response.data.conversation_id?.toString(),
-        context: response.data.context || [],
-        evaluation: response.data.evaluation,
-      };
-
-      setMessages((prev) => [...prev, botMessage]);
+        text: `“${response.data.name}” is ready. Ask a question about your document.`,
+      }]);
     } catch (error) {
-      console.error("Error processing modal input:", error);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          user: "bot",
-          text: "Sorry, something went wrong while processing your request.",
-        },
-      ]);
+      if (controller.signal.aborted) return;
+      documentsChanged();
+      setMessages((prev) => [...prev, { user: "bot", text: errorMessage(error) }]);
     } finally {
-      setModalSubmitting(false);
+      if (!controller.signal.aborted) {
+        setModalSubmitting(false);
+        setStatusText("");
+      }
     }
   };
 
@@ -263,8 +263,8 @@ useEffect(() => {
             notices={msg.notices}
           />
         ))}
-        {chatLoading && (
-          <div className="flex items-center gap-2 text-[hsl(var(--muted-foreground))] text-sm px-4 pb-2">
+        {(chatLoading || modalSubmitting) && (
+          <div role="status" aria-live="polite" className="flex items-center gap-2 text-[hsl(var(--muted-foreground))] text-sm px-4 pb-2">
             <span className="animate-pulse">●</span>
             <span>{statusText || "Thinking..."}</span>
           </div>
@@ -276,7 +276,7 @@ useEffect(() => {
         {/* Small button to open modal */}
         <button
           onClick={() => setIsModalOpen(true)}
-          disabled={chatLoading}
+          disabled={chatLoading || modalSubmitting}
           className="mr-2 px-3 py-2 rounded bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:bg-[hsl(var(--secondary)/0.8)] transition-colors duration-200 disabled:opacity-50"
           aria-label="Upload file, URL, or text"
           title="Attach content"
@@ -289,9 +289,9 @@ useEffect(() => {
           className="flex-grow border border-[hsl(var(--input))] rounded px-4 py-2 mr-4 bg-[hsl(var(--background))] text-[hsl(var(--foreground))]"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !chatLoading && sendMessage()}
-          placeholder="Type your message here"
-          disabled={chatLoading}
+          onKeyDown={(e) => e.key === "Enter" && !chatLoading && !modalSubmitting && sendMessage()}
+          placeholder={modalSubmitting ? "Wait for your document to be ready…" : "Ask about your documents"}
+          disabled={chatLoading || modalSubmitting}
         />
         <button
           className={`px-6 py-2 rounded font-semibold transition-colors duration-200 ${
@@ -300,9 +300,9 @@ useEffect(() => {
               : "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]"
           }`}
           onClick={sendMessage}
-          disabled={chatLoading}
+          disabled={chatLoading || modalSubmitting}
         >
-          {chatLoading ? "Sending..." : "Send"}
+          {modalSubmitting ? "Indexing…" : chatLoading ? "Sending..." : "Send"}
         </button>
       </div>
 
@@ -346,7 +346,7 @@ useEffect(() => {
               </button>
               <button
                 onClick={handleModalSubmit}
-                disabled={modalSubmitting}
+                disabled={modalSubmitting || (!fileLocal && !url.trim() && !textInput.trim())}
                 className="px-4 py-2 rounded bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] font-semibold"
               >
                 {modalSubmitting ? "Processing..." : "Submit"}

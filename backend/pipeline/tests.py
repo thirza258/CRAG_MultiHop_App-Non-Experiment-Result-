@@ -483,7 +483,7 @@ class EvaluateTests(unittest.TestCase):
             with runtime_context.use_runtime(settings):
                 self.pipeline.evaluate("q", ["chunk"], "answer")
 
-        self.assertEqual(judge_mock.call_args.kwargs["metrics"], [])
+        judge_mock.assert_not_called()
 
     def test_empty_judge_result_yields_no_scores(self):
         convert, judge, llm_wrapper, emb_wrapper = self._patched_judge(judge_result=_FakeScores(empty=True))
@@ -960,7 +960,7 @@ class RunCoreDegradationTests(unittest.TestCase):
         self.assertEqual(result["answer"], app_pipeline._NO_CONTEXT_ANSWER)
         self.assertEqual(result["context"], [])
 
-    def test_collection_resolve_failure_falls_back_to_the_dataset_collection(self):
+    def test_collection_resolve_failure_never_searches_another_corpus(self):
         _install_resolver(self.pipeline, error=RuntimeError("postgres down"))
         self._dense_returns(["dense-1"], [{"src": "dense-1"}])
         self._reranker_returns(["dense-1"], [{"src": "dense-1"}])
@@ -968,9 +968,9 @@ class RunCoreDegradationTests(unittest.TestCase):
         result = self.pipeline._run_core("q", "bob", 7)
 
         self.assertEqual(result["degraded"], ["collection_resolve"])
-        self.assertEqual(result["source"], "dataset_collection_fallback")
-        self.assertEqual(result["answer"], "generated answer")
-        self.pipeline.dense_rag.set_collection.assert_called_once_with("dataset_collection")
+        self.assertEqual(result["source"], "collection_unavailable")
+        self.assertEqual(result["answer"], app_pipeline._NO_CONTEXT_ANSWER)
+        self.pipeline.dense_rag.set_collection.assert_not_called()
 
     def test_corpus_user_without_documents_stops_before_retrieval(self):
         # Searching the shared corpus instead would quietly ignore what the user
