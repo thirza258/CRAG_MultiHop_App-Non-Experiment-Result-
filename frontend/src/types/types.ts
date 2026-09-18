@@ -148,6 +148,7 @@ export type SubmitPayload =
 
 export interface DocStep {
   id: number;
+  slug: string;
   title: string;
   description: React.ReactNode;
   icon: React.ReactNode;

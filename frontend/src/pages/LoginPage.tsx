@@ -13,7 +13,7 @@ const LoginPage: React.FC = () => {
     description:
       "Sign in with a username and email to start chatting with your documents.",
     path: "/login",
-    noindex: true,
+    noindex: false,
   });
 
   const handleSubmit = (e: React.FormEvent) => {

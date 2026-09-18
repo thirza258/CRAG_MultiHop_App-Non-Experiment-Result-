@@ -314,10 +314,12 @@ If you have no uploaded documents, the default query asks you to upload one. Cho
 | Route | Page | Indexed |
 |-------|------|---------|
 | `/` | Landing page — what the pipeline does, models, self-hosting, FAQ | yes |
-| `/docs` | Step-by-step walkthrough with screenshots | yes |
+| `/features`, `/how-it-works`, `/benchmarks`, `/models`, `/self-host`, `/faq` | Dedicated section views with targeted SEO metadata | yes |
+| `/docs` | Step-by-step walkthrough overview | yes |
+| `/docs/:slug` | Deep-linked individual documentation guide steps | yes |
 | `/about` | Research background, evaluation metrics, scope of the deployment | yes |
+| `/login` | Guest sign-in / authentication entry | yes |
 | `/chat` | The app (redirects to `/login` without a session) | no |
-| `/login` | Guest sign-in | no |
 | anything else | 404 page | no |
 
 Public-page metadata lives in `frontend/index.html` (static tags for social crawlers, which don't run JS) and `frontend/src/lib/seo.ts` (per-route title/description/canonical). `frontend/public/robots.txt` and `frontend/public/sitemap.xml` reference `https://crag.nevatal.tech` — change the domain there if you deploy elsewhere.

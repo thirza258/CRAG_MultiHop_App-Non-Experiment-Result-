@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useState, useEffect } from "react";
+import { Link, useLocation } from "react-router-dom";
 import {
   Activity,
   ArrowRight,
@@ -269,13 +269,67 @@ const faqJsonLd = {
   ],
 };
 
+const sectionMetadata: Record<
+  string,
+  { title: string; description: string; elementId: string }
+> = {
+  "/features": {
+    title: "Features & Architecture | CRAG MultiHop RAG",
+    description:
+      "Explore core features: hybrid BM25 + dense retrieval, cross-encoder reranking, multi-hop reasoning, and self-grading Corrective RAG.",
+    elementId: "features",
+  },
+  "/how-it-works": {
+    title: "Pipeline Architecture & How It Works | CRAG MultiHop RAG",
+    description:
+      "Learn how questions travel through dense/sparse retrieval, corrective grading, multi-hop orchestration, local reranking, and RAGAs evaluation.",
+    elementId: "how-it-works",
+  },
+  "/benchmarks": {
+    title: "MultiHop-RAG Benchmark Evaluation | CRAG MultiHop RAG",
+    description:
+      "Benchmark evaluation on MultiHop-RAG: comparing naive RAG, hybrid search, and corrective multi-hop pipelines across key metrics.",
+    elementId: "benchmarks",
+  },
+  "/models": {
+    title: "Supported LLMs & Local Models | CRAG MultiHop RAG",
+    description:
+      "OpenRouter chat and embedding models, alongside locally run Jina-reranker-v3 and Multilingual-E5-small graders.",
+    elementId: "models",
+  },
+  "/self-host": {
+    title: "Self-Hosting & Docker Setup Guide | CRAG MultiHop RAG",
+    description:
+      "Run CRAG MultiHop RAG on your own hardware with Docker Compose, local GPU/CPU inference, and persistent ChromaDB storage.",
+    elementId: "self-host",
+  },
+  "/faq": {
+    title: "Frequently Asked Questions | CRAG MultiHop RAG",
+    description:
+      "Common questions about Corrective Multi-Hop RAG, privacy, supported document formats, local models, and pricing.",
+    elementId: "faq",
+  },
+};
+
 const Landing: React.FC = () => {
+  const location = useLocation();
+  const currentSection = sectionMetadata[location.pathname];
+
   useSeo({
-    title: LANDING_TITLE,
-    description: LANDING_DESCRIPTION,
-    path: "/",
+    title: currentSection ? currentSection.title : LANDING_TITLE,
+    description: currentSection ? currentSection.description : LANDING_DESCRIPTION,
+    path: currentSection ? location.pathname : "/",
     jsonLd: faqJsonLd,
   });
+
+  useEffect(() => {
+    if (currentSection?.elementId) {
+      const el = document.getElementById(currentSection.elementId);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth" });
+      }
+    }
+  }, [location.pathname, currentSection]);
 
   const signedIn = Boolean(localStorage.getItem("username"));
   const primaryHref = signedIn ? "/chat" : "/login";

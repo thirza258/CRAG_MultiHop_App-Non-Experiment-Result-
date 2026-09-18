@@ -22,6 +22,7 @@ import deepAnalysisImage from "../../assets/docs/docs_deepanalysis.png";
 export const steps: DocStep[] = [
   {
     id: 1,
+    slug: "account-creation",
     title: "Account Creation & Login",
     description:
       "Create a username and email. This unified login allows you to resume sessions seamlessly across devices.",
@@ -32,6 +33,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 2,
+    slug: "document-ingestion",
     title: "Document Ingestion",
     description:
       "Insert your PDF URL or paste text directly. The system prepares your data for the knowledge base.",
@@ -42,6 +44,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 3,
+    slug: "initialization",
     title: "Initialization",
     description:
       "The system initializes your PDF. A loading indicator signifies the processing and vectorization phase.",
@@ -52,6 +55,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 4,
+    slug: "chat-interaction",
     title: "Chat Interaction",
     description: (
       <>
@@ -67,6 +71,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 5,
+    slug: "deep-analysis",
     title: "Trigger Deep Analysis",
     description:
       "Click the 'Deep Analysis' button located under the chatbot's response to investigate the source validity.",
@@ -76,6 +81,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 6,
+    slug: "ground-truth",
     title: "Select Ground Truth Chunks and Provide Response",
     description:
       "In the Ground Truth view, select the specific text chunk you believe represents the accurate answer and provide your expected response.",
@@ -85,6 +91,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 7,
+    slug: "hybrid-processing",
     title: "Hybrid Processing",
     description: (
       <>
@@ -101,6 +108,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 8,
+    slug: "scoring-results",
     title: "Scoring & Results",
     description:
       "Receive a relevance score indicating how well the retrieved chunks match your specific query.",
@@ -111,6 +119,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 9,
+    slug: "sidebar-configuration",
     title: "Sidebar Configuration",
     description:
       "Use the sidebar to configure advanced settings or prepare to add Ground Truth data for evaluation.",
@@ -120,6 +129,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 10,
+    slug: "ground-truth-selection",
     title: "Ground Truth Selection",
     description:
       "In the Ground Truth view, select the specific text chunk you believe represents the accurate answer.",
@@ -129,6 +139,7 @@ export const steps: DocStep[] = [
   },
   {
     id: 11,
+    slug: "evaluation",
     title: "Evaluation",
     description:
       "Once Ground Truth is established, the evaluation metrics specific to that truth will appear for analysis.",

@@ -19,7 +19,14 @@ function App() {
         {/* Public, indexable pages */}
         <Route element={<LandingPageLayout />}>
           <Route path="/" element={<Landing />} />
+          <Route path="/features" element={<Landing />} />
+          <Route path="/how-it-works" element={<Landing />} />
+          <Route path="/benchmarks" element={<Landing />} />
+          <Route path="/models" element={<Landing />} />
+          <Route path="/self-host" element={<Landing />} />
+          <Route path="/faq" element={<Landing />} />
           <Route path="/docs" element={<Docs />} />
+          <Route path="/docs/:slug" element={<Docs />} />
           <Route path="/about" element={<About />} />
           <Route path="/error" element={<ErrorPage />} />
           {/* Nginx serves index.html for unknown paths, so catch them here
