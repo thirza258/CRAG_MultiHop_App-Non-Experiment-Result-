@@ -2,6 +2,7 @@
 # Indexable pages: /, /about, /login, /features, /how-it-works, /benchmarks, /models, /self-host, /faq, /docs, /docs/*
 
 User-agent: *
+Content-Signal: ai-train=yes, search=yes, ai-input=yes
 Disallow: /chat
 Disallow: /error
 Disallow: /api/
