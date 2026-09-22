@@ -1,0 +1,12 @@
+{
+  "keys": [
+    {
+      "kty": "RSA",
+      "use": "sig",
+      "alg": "RS256",
+      "kid": "crag-agent-sig-1",
+      "n": "qjN3W5P6xbrkudFytkF7ccfB39PYj7xOtzYq4-b7086RmDiAyL1jcYhIBHyp7dwOffhKhCO2iGESLUD4tloOsQQAiqjnrteR6s4Os6lbkNjx-p5vPq_3xJ7ZkXvhAFY0OZJS0TTZGPYzE36X9LE1-ii8jLgHW2DDngU87CyMcX356zpFBbsbLJwjRsCP3mTLNvyMahUY2tCZcAMIuT6uou03kEGca1mrsOMaha1ih41WGLfJua2yNp5GOs-p42enrWaaSj_B66OIMLSr5asOtsp8rl3OpUQMVQVpFLmHitC3p8pHTjH2yNf9gGdaeehYe9eQSa7MElKuWYyGl9WLEQ",
+      "e": "AQAB"
+    }
+  ]
+}

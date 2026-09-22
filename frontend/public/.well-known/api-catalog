@@ -1,0 +1,25 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://crag.nevatal.tech/api",
+      "service-desc": [
+        {
+          "href": "https://crag.nevatal.tech/api/openapi.json",
+          "type": "application/vnd.oai.openapi+json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://crag.nevatal.tech/api/docs",
+          "type": "text/html"
+        }
+      ],
+      "status": [
+        {
+          "href": "https://crag.nevatal.tech/api/v1/health/",
+          "type": "application/json"
+        }
+      ]
+    }
+  ]
+}

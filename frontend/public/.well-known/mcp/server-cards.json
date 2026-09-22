@@ -1,0 +1,16 @@
+{
+  "serverInfo": {
+    "name": "crag-mcp",
+    "version": "1.0.0"
+  },
+  "endpoint": "https://crag.nevatal.tech/mcp",
+  "transport": {
+    "type": "streamable-http",
+    "url": "https://crag.nevatal.tech/mcp"
+  },
+  "capabilities": {
+    "tools": true,
+    "resources": true,
+    "prompts": true
+  }
+}

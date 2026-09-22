@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+  "skills": [
+    {
+      "name": "crag-multihop-qa",
+      "type": "skill-md",
+      "description": "Corrective Retrieval-Augmented Generation (CRAG) system for multi-hop question answering, web validation, and factual evaluation.",
+      "url": "https://crag.nevatal.tech/skills/crag-multihop-qa/SKILL.md",
+      "digest": "sha256:fc351b9748c1163dd66a2c647273c444aab6b4972fb508ad224badcca0ca9eb3"
+    }
+  ]
+}

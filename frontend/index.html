@@ -24,6 +24,38 @@
     <meta name="robots" content="index, follow, max-image-preview:large" />
     <meta name="theme-color" content="#240091" />
     <meta name="color-scheme" content="light" />
+    <script>
+      (() => {
+        function registerWebMcpTools() {
+          if (!('modelContext' in navigator) || !navigator.modelContext) return;
+          try {
+            const controller = new AbortController();
+            navigator.modelContext.registerTool({
+              name: 'search_crag_multihop',
+              title: 'Search CRAG MultiHop',
+              description: 'Search documents, run multi-hop questions, and view verified answers on CRAG.',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  query: { type: 'string', description: 'Question or search query for multi-hop retrieval' }
+                },
+                required: ['query']
+              },
+              execute: async ({ query }) => {
+                return {
+                  content: [{ type: 'text', text: `Results for ${query}: Visit https://crag.nevatal.tech` }]
+                };
+              }
+            }, { signal: controller.signal });
+          } catch (e) {}
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', registerWebMcpTools);
+        } else {
+          registerWebMcpTools();
+        }
+      })();
+    </script>
 
     <!-- PWA: iOS standalone mode (the manifest link + web manifest are
          injected at build time by vite-plugin-pwa) -->
