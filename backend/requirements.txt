@@ -1,6 +1,8 @@
 
-Django>=4.2
-langchain-classic==1.0.3
+Django>=5.2
+langchain-classic==1.0.8
+# Pinned to 0.4.1: langchain-community 0.4.2 dropped chat_models.vertexai,
+# which causes ModuleNotFoundError in ragas 0.4.3 during import.
 langchain-community==0.4.1
 ragas==0.4.3
 
