@@ -27,10 +27,11 @@ channels-redis
 
 # ── ML / NLP ───────────────────────────────────────────────
 # torch installed separately as CPU-only in Dockerfile
-sentence-transformers
+sentence-transformers>=5.5.2
 transformers
-chromadb
+chromadb>=1.5.9
 accelerate
+pillow>=13.0.0
 
 # ── LangChain ──────────────────────────────────────────────
 langchain
@@ -44,7 +45,7 @@ numpy
 pandas
 scikit-learn
 rank-bm25
-nltk
+nltk>=3.10.4
 datasets
 huggingface-hub
 
@@ -57,3 +58,5 @@ PyPDF2
 wikipedia
 whitenoise
 PyYAML>=6.0
+urllib3>=2.7.0
+anyio>=4.14.2
