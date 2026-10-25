@@ -2,14 +2,14 @@
   "name": "CRAG MultiHop Agent",
   "version": "1.0.0",
   "description": "Corrective Retrieval-Augmented Generation agent for multi-hop question answering and verification.",
-  "url": "https://crag.nevatal.tech",
+  "url": "https://crag.nevatal.id",
   "supportedInterfaces": [
     {
-      "url": "https://crag.nevatal.tech/mcp",
+      "url": "https://crag.nevatal.id/mcp",
       "protocol": "mcp"
     },
     {
-      "url": "https://crag.nevatal.tech/api",
+      "url": "https://crag.nevatal.id/api",
       "protocol": "http"
     }
   ],

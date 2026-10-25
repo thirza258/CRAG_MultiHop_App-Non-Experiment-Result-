@@ -1,4 +1,4 @@
-# https://crag.nevatal.tech
+# https://crag.nevatal.id
 # Indexable pages: /, /about, /login, /features, /how-it-works, /benchmarks, /models, /self-host, /faq, /docs, /docs/*
 
 User-agent: *
@@ -8,4 +8,4 @@ Disallow: /error
 Disallow: /api/
 Disallow: /ws/
 
-Sitemap: https://crag.nevatal.tech/sitemap.xml
+Sitemap: https://crag.nevatal.id/sitemap.xml

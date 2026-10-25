@@ -9,7 +9,7 @@ import { useEffect } from "react";
  * in sync with the values used for the "/" route below.
  */
 
-export const SITE_URL = "https://crag.nevatal.tech";
+export const SITE_URL = "https://crag.nevatal.id";
 export const SITE_NAME = "CRAG MultiHop RAG";
 export const OG_IMAGE = `${SITE_URL}/og-image.png`;
 export const REPO_URL =

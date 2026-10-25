@@ -322,7 +322,7 @@ If you have no uploaded documents, the default query asks you to upload one. Cho
 | `/chat` | The app (redirects to `/login` without a session) | no |
 | anything else | 404 page | no |
 
-Public-page metadata lives in `frontend/index.html` (static tags for social crawlers, which don't run JS) and `frontend/src/lib/seo.ts` (per-route title/description/canonical). `frontend/public/robots.txt` and `frontend/public/sitemap.xml` reference `https://crag.nevatal.tech` — change the domain there if you deploy elsewhere.
+Public-page metadata lives in `frontend/index.html` (static tags for social crawlers, which don't run JS) and `frontend/src/lib/seo.ts` (per-route title/description/canonical). `frontend/public/robots.txt` and `frontend/public/sitemap.xml` reference `https://crag.nevatal.id` — change the domain there if you deploy elsewhere.
 
 ---
 

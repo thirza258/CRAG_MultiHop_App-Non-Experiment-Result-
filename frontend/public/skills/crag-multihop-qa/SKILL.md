@@ -16,6 +16,6 @@ Use the Corrective RAG pipeline to retrieve documents across multiple hops, vali
 
 ## Endpoints
 
-- API Base: `https://crag.nevatal.tech/api`
-- OpenAPI Specification: `https://crag.nevatal.tech/api/openapi.json`
-- API Documentation: `https://crag.nevatal.tech/api/docs`
+- API Base: `https://crag.nevatal.id/api`
+- OpenAPI Specification: `https://crag.nevatal.id/api/openapi.json`
+- API Documentation: `https://crag.nevatal.id/api/docs`

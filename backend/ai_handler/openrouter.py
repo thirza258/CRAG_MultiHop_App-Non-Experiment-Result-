@@ -29,7 +29,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 #: OpenRouter attributes traffic to an app with these; they are not credentials.
 OPENROUTER_HEADERS = {
-    "HTTP-Referer": "https://crag.nevatal.tech",
+    "HTTP-Referer": "https://crag.nevatal.id",
     "X-Title": "CRAG MultiHop RAG",
 }
 

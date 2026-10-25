@@ -225,7 +225,7 @@ const faqs = [
   {
     category: "Setup & Deployment",
     q: "Do I need an API key to self-host?",
-    a: "Not to use this hosted instance at crag.nevatal.tech. If you self-host via Docker Compose, you need an OpenRouter API key — embeddings, generation and the evaluation judge run through OpenRouter, while the reranker and the retrieval grader are downloaded and run locally on your server.",
+    a: "Not to use this hosted instance at crag.nevatal.id. If you self-host via Docker Compose, you need an OpenRouter API key — embeddings, generation and the evaluation judge run through OpenRouter, while the reranker and the retrieval grader are downloaded and run locally on your server.",
   },
   {
     category: "Privacy & Models",
@@ -436,7 +436,7 @@ const Landing: React.FC = () => {
               <span>
                 No password required — sign in with a username and email. Research
                 build hosted at{" "}
-                <code className="font-mono text-[hsl(var(--foreground))]">crag.nevatal.tech</code>.
+                <code className="font-mono text-[hsl(var(--foreground))]">crag.nevatal.id</code>.
               </span>
             </p>
           </div>

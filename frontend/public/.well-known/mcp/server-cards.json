@@ -3,10 +3,10 @@
     "name": "crag-mcp",
     "version": "1.0.0"
   },
-  "endpoint": "https://crag.nevatal.tech/mcp",
+  "endpoint": "https://crag.nevatal.id/mcp",
   "transport": {
     "type": "streamable-http",
-    "url": "https://crag.nevatal.tech/mcp"
+    "url": "https://crag.nevatal.id/mcp"
   },
   "capabilities": {
     "tools": true,

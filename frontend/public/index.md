@@ -1,7 +1,7 @@
 ---
 title: Corrective Multi-Hop RAG with Reranking | CRAG MultiHop RAG
 description: Chat with your PDFs, URLs and notes. Dense + BM25 retrieval, self-grading Corrective RAG, up to 3 query hops, local reranking and faithfulness scores on every answer.
-image: https://crag.nevatal.tech/og-image.png
+image: https://crag.nevatal.id/og-image.png
 ---
 
 # Corrective Multi-Hop RAG with Reranking
@@ -29,7 +29,7 @@ CRAG MultiHop RAG is an intelligent retrieval-augmented generation application d
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "CRAG MultiHop RAG",
-  "url": "https://crag.nevatal.tech/",
+  "url": "https://crag.nevatal.id/",
   "applicationCategory": "DeveloperApplication",
   "description": "Chat with your PDFs, URLs and notes. Dense + BM25 retrieval, self-grading Corrective RAG, up to 3 query hops, local reranking and faithfulness scores on every answer.",
   "offers": {

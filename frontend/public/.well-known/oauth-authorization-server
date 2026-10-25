@@ -1,8 +1,8 @@
 {
-  "issuer": "https://crag.nevatal.tech",
-  "authorization_endpoint": "https://crag.nevatal.tech/oauth/authorize",
-  "token_endpoint": "https://crag.nevatal.tech/api/auth/token",
-  "jwks_uri": "https://crag.nevatal.tech/.well-known/jwks.json",
+  "issuer": "https://crag.nevatal.id",
+  "authorization_endpoint": "https://crag.nevatal.id/oauth/authorize",
+  "token_endpoint": "https://crag.nevatal.id/api/auth/token",
+  "jwks_uri": "https://crag.nevatal.id/.well-known/jwks.json",
   "grant_types_supported": [
     "authorization_code",
     "client_credentials",
@@ -25,10 +25,10 @@
     "client_secret_post"
   ],
   "agent_auth": {
-    "skill": "https://crag.nevatal.tech/auth.md",
-    "register_uri": "https://crag.nevatal.tech/api/agent/register",
-    "claim_uri": "https://crag.nevatal.tech/api/agent/claim",
-    "revocation_uri": "https://crag.nevatal.tech/api/agent/revoke",
+    "skill": "https://crag.nevatal.id/auth.md",
+    "register_uri": "https://crag.nevatal.id/api/agent/register",
+    "claim_uri": "https://crag.nevatal.id/api/agent/claim",
+    "revocation_uri": "https://crag.nevatal.id/api/agent/revoke",
     "identity_types_supported": [
       "anonymous",
       "identity_assertion"
@@ -37,7 +37,7 @@
       "credential_types_supported": [
         "bearer_token"
       ],
-      "claim_uri": "https://crag.nevatal.tech/api/agent/claim"
+      "claim_uri": "https://crag.nevatal.id/api/agent/claim"
     },
     "identity_assertion": {
       "assertion_types_supported": [
@@ -47,7 +47,7 @@
       "credential_types_supported": [
         "bearer_token"
       ],
-      "claim_uri": "https://crag.nevatal.tech/api/agent/claim"
+      "claim_uri": "https://crag.nevatal.id/api/agent/claim"
     }
   }
 }
