@@ -1,9 +1,10 @@
 from common.prompt_builder import vote_prompt, rag_prompt, prompt_generator
 from abc import ABC, abstractmethod
-from typing import Optional
 import logging
 import os
+import random
 import time
+from typing import Any, Optional
 from openai import OpenAI
 
 from ai_handler.openrouter import MissingAPIKeyError, openrouter_client
@@ -13,6 +14,60 @@ from common.runtime.context import request_secrets, resolve_llm_model
 logger = logging.getLogger(__name__)
 
 _MAX_ATTEMPTS = 3
+
+FREE_OPENROUTER_MODELS = [
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "cohere/north-mini-code:free",
+    "recursive/flint-v1.0:free",
+    "xingchen-agi/xing4.0-29b-a4b:free",
+    "nvidia/nemotron-3.5-super-vl:free",
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemma-4-31b-it:free",
+]
+
+
+def get_shuffled_free_models() -> list[str]:
+    models = list(FREE_OPENROUTER_MODELS)
+    random.shuffle(models)
+    return models
+
+
+def is_credit_exhausted_error(exc_or_status: Any, message: str = "") -> bool:
+    code = None
+    if isinstance(exc_or_status, int):
+        code = exc_or_status
+    else:
+        for attr in ("status_code", "http_status", "code"):
+            val = getattr(exc_or_status, attr, None)
+            if isinstance(val, int):
+                code = val
+                break
+        if code is None and hasattr(exc_or_status, "response"):
+            resp = getattr(exc_or_status, "response", None)
+            code = getattr(resp, "status_code", None)
+
+    msg_str = f"{exc_or_status} {message}".lower()
+    if code == 402:
+        return True
+
+    if "rate limit" in msg_str and not any(k in msg_str for k in ("credit", "payment", "balance")):
+        return False
+
+    credit_keywords = (
+        "402",
+        "credit",
+        "payment required",
+        "run out of credits",
+        "insufficient balance",
+        "insufficient credits",
+        "insufficient_quota",
+        "exceeded your current quota",
+        "out of credit",
+    )
+    return any(kw in msg_str for kw in credit_keywords)
 
 
 def _chat_with_retry(client: OpenAI, provider: str, model: str, prompt: str, temperature: float) -> str:
@@ -28,6 +83,26 @@ def _chat_with_retry(client: OpenAI, provider: str, model: str, prompt: str, tem
             return (response.choices[0].message.content or "").strip()
         except Exception as e:
             last_error = e
+            if provider == "OpenRouter" and is_credit_exhausted_error(e):
+                logger.warning(
+                    "OpenRouter credits exhausted (%s), falling back to shuffled free models",
+                    api_keys_module.scrub(str(e), request_secrets()),
+                )
+                for free_model in get_shuffled_free_models():
+                    try:
+                        logger.info("Retrying with free fallback model: %s", free_model)
+                        fb_response = client.chat.completions.create(
+                            model=free_model,
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=temperature,
+                        )
+                        fb_text = (fb_response.choices[0].message.content or "").strip()
+                        if fb_text:
+                            logger.info("Fallback succeeded with free model: %s", free_model)
+                            return fb_text
+                    except Exception as fb_exc:
+                        logger.warning("Free model %s failed: %s", free_model, fb_exc)
+                        continue
             # SDK exceptions quote the failing request, which can include the
             # Authorization header — so scrub before this reaches a log file.
             logger.warning(
