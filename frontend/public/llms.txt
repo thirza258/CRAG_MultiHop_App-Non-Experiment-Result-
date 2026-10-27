@@ -1,0 +1,9 @@
+# CRAG MultiHop Agent
+
+> Corrective Retrieval-Augmented Generation agent for multi-hop question answering and verification.
+
+- Site: https://crag.nevatal.id/
+- Agent card: https://crag.nevatal.id/.well-known/agent-card.json
+- MCP server card: https://crag.nevatal.id/.well-known/mcp/server-card.json
+- API catalog: https://crag.nevatal.id/.well-known/api-catalog
+- API docs: https://crag.nevatal.id/api/docs

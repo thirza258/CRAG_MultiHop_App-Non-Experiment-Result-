@@ -1,0 +1,46 @@
+{
+  "protocol_version": "0.1",
+  "organization": {
+    "name": "Nevatal",
+    "domain": "crag.nevatal.id"
+  },
+  "auth": {
+    "issuer": "https://crag.nevatal.id",
+    "direct": {
+      "scopes": [
+        "poppy:read",
+        "poppy:write"
+      ]
+    },
+    "device": {
+      "scopes": [
+        "poppy:read",
+        "poppy:write"
+      ]
+    }
+  },
+  "agent": {
+    "protocols": [
+      {
+        "type": "poppy",
+        "endpoint": "https://crag.nevatal.id/api"
+      }
+    ]
+  },
+  "apis": [
+    {
+      "type": "openapi",
+      "url": "https://crag.nevatal.id/api/openapi.json",
+      "description": "CRAG MultiHop API"
+    },
+    {
+      "type": "mcp",
+      "url": "https://crag.nevatal.id/mcp",
+      "description": "CRAG MultiHop MCP server"
+    }
+  ],
+  "web": {
+    "browser_session_endpoint": "https://crag.nevatal.id/"
+  },
+  "extensions": {}
+}

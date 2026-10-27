@@ -1,0 +1,42 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "CRAG MultiHop",
+    "identifier": "did:web:crag.nevatal.id"
+  },
+  "entries": [
+    {
+      "identifier": "urn:air:crag.nevatal.id:server:mcp",
+      "displayName": "CRAG MultiHop MCP Server",
+      "type": "application/mcp-server-card+json",
+      "url": "https://crag.nevatal.id/.well-known/mcp/server-card.json",
+      "representativeQueries": [
+        "explore CRAG MultiHop",
+        "discover CRAG MultiHop capabilities",
+        "use crag multi-hop qa"
+      ]
+    },
+    {
+      "identifier": "urn:air:crag.nevatal.id:agent:a2a",
+      "displayName": "CRAG MultiHop A2A Agent",
+      "type": "application/json",
+      "url": "https://crag.nevatal.id/.well-known/agent-card.json",
+      "representativeQueries": [
+        "explore CRAG MultiHop",
+        "discover CRAG MultiHop capabilities",
+        "use crag multi-hop qa"
+      ]
+    },
+    {
+      "identifier": "urn:air:crag.nevatal.id:api:v1",
+      "displayName": "CRAG MultiHop API",
+      "type": "application/json",
+      "url": "https://crag.nevatal.id/api",
+      "representativeQueries": [
+        "explore CRAG MultiHop",
+        "discover CRAG MultiHop capabilities",
+        "use crag multi-hop qa"
+      ]
+    }
+  ]
+}
