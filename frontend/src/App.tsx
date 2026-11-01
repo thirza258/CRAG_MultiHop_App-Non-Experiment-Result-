@@ -11,6 +11,7 @@ import ErrorPage from "./pages/ErrorPage";
 import Docs from "./pages/Docs";
 import Landing from "./pages/Landing";
 import About from "./pages/About";
+import Legal from "./pages/Legal";
 
 function App() {
   return (
@@ -28,6 +29,8 @@ function App() {
           <Route path="/docs" element={<Docs />} />
           <Route path="/docs/:slug" element={<Docs />} />
           <Route path="/about" element={<About />} />
+          <Route path="/privacy" element={<Legal />} />
+          <Route path="/terms" element={<Legal />} />
           <Route path="/error" element={<ErrorPage />} />
           {/* Nginx serves index.html for unknown paths, so catch them here
               instead of rendering a blank page. */}
