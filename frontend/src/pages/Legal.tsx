@@ -124,6 +124,16 @@ export const Legal: React.FC = () => {
                 Administrators can clear the vector database or flush indices at any time via project commands.
               </p>
             </section>
+
+            <section className="rounded-xl border border-border bg-card p-6 text-card-foreground">
+              <h2 className="text-lg font-semibold text-foreground mb-3">4. Privacy Contact</h2>
+              <p>
+                For questions regarding data privacy or server operations, reach us at:{" "}
+                <a href="mailto:nevatalapp@gmail.com" className="text-primary hover:underline font-mono">
+                  nevatalapp@gmail.com
+                </a>
+              </p>
+            </section>
           </div>
         ) : (
           <div className="space-y-8 text-sm leading-relaxed text-muted-foreground">
@@ -160,6 +170,16 @@ export const Legal: React.FC = () => {
               <p>
                 The application is provided &ldquo;AS IS&rdquo; without warranties of any kind.
                 In no event shall the authors or copyright holders be liable for any claim, damages, or other liability.
+              </p>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card p-6 text-card-foreground">
+              <h2 className="text-lg font-semibold text-foreground mb-3">5. Terms Contact</h2>
+              <p>
+                For inquiries regarding usage terms, contact:{" "}
+                <a href="mailto:nevatalapp@gmail.com" className="text-primary hover:underline font-mono">
+                  nevatalapp@gmail.com
+                </a>
               </p>
             </section>
           </div>
