@@ -15,7 +15,7 @@ const Docs: React.FC = () => {
 
   const description = activeStep
     ? `Step ${activeStep.id}: ${activeStep.title}. Walkthrough and usage guide for the CRAG MultiHop RAG pipeline.`
-    : "A walkthrough of the app: signing in, adding a PDF, URL or pasted text, waiting for indexing, chatting with the corrective multi-hop pipeline, and reading the retrieved chunks and evaluation scores.";
+    : "A walkthrough of the app: explore the platform, sign in, add a PDF, URL or pasted text, wait for indexing, chat with the corrective multi-hop pipeline, and read retrieved chunks and evaluation scores.";
 
   const path = activeStep ? `/docs/${activeStep.slug}` : "/docs";
 
@@ -75,7 +75,7 @@ const Docs: React.FC = () => {
             {activeStep ? activeStep.title : "Using the app, step by step"}
           </h1>
           <p className="mt-6 text-lg leading-relaxed text-muted-foreground">
-            Sign in, give the app something to read, then ask your question.
+            Explore the platform, sign in, give the app something to read, then ask your question.
             Each step below shows what happens on screen and what the pipeline
             is doing behind it.
           </p>
@@ -111,6 +111,9 @@ const Docs: React.FC = () => {
         <div className="relative border-l border-border ml-4 md:ml-6 space-y-12">
           {steps.map((step) => {
             const isSelected = slug === step.slug;
+            const imageSrc =
+              step.imagePath ||
+              `https://placehold.co/600x400/0f172a/06b6d4?text=${encodeURIComponent(step.imagePlaceholderText)}`;
             return (
               <div key={step.id} className="relative pl-8 md:pl-12">
                 {/* Timeline Dot */}
@@ -159,18 +162,27 @@ const Docs: React.FC = () => {
                   </div>
 
                   {/* Image Content */}
-                  <div className="relative rounded overflow-hidden border border-border bg-muted/30 aspect-video group cursor-pointer">
-                    <div className="absolute inset-0 flex items-center justify-center bg-[hsl(var(--muted))] group-hover:bg-transparent transition-all z-10">
-                      <span className="sr-only">View Screenshot</span>
-                    </div>
-                    <img
-                      src={
-                        step.imagePath ||
-                        `https://placehold.co/600x400/0f172a/06b6d4?text=${encodeURIComponent(step.imagePlaceholderText)}`
-                      }
-                      alt={step.imageAlt}
-                      className="w-full h-full object-cover opacity-90 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                    />
+                  <div className="relative rounded overflow-hidden border border-border bg-muted/30 aspect-video group">
+                    <a
+                      href={imageSrc}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block h-full w-full"
+                      aria-label={`Open full-size screenshot: ${step.imageAlt}`}
+                    >
+                      <img
+                        src={imageSrc}
+                        alt={step.imageAlt}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                      />
+                      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end bg-gradient-to-t from-black/50 to-transparent p-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                        <span className="rounded bg-background/90 px-2 py-1 text-xs font-medium text-foreground">
+                          View full size
+                        </span>
+                      </span>
+                    </a>
                   </div>
                 </div>
               </div>

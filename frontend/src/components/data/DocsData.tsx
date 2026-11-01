@@ -1,5 +1,6 @@
 
 import {
+  Globe,
   UserPlus,
   FileText,
   Loader2,
@@ -13,15 +14,32 @@ import {
 } from "lucide-react";
 import { DocStep } from "../../types/types";
 
+import landingImage from "../../assets/docs/docs_landingpage.png";
 import loginImage from "../../assets/docs/docs_login.png";
 import pdfInputImage from "../../assets/docs/docs_pdfinput.png";
 import initImage from "../../assets/docs/docs_init.png";
 import chatInterfaceImage from "../../assets/docs/docs_chat.png";
 import deepAnalysisImage from "../../assets/docs/docs_deepanalysis.png";
+import groundTruthImage from "../../assets/docs/docs_groundtruth.png";
+import hybridSettingsImage from "../../assets/docs/docs_hybrid.png";
+import scoringImage from "../../assets/docs/docs_scoring.png";
+import sidebarImage from "../../assets/docs/docs_sidebar.png";
+import evaluationImage from "../../assets/docs/docs_evaluation.png";
 
 export const steps: DocStep[] = [
   {
     id: 1,
+    slug: "landing-page",
+    title: "Platform Overview & Landing Page",
+    description:
+      "Explore the homepage to learn about the Corrective Multi-Hop RAG architecture, test the interactive trace simulator, and start chatting or reading documentation.",
+    icon: <Globe className="w-6 h-6 text-primary" />,
+    imagePath: landingImage,
+    imageAlt: "CRAG MultiHop RAG Landing Page and Live Simulator",
+    imagePlaceholderText: "Landing Page Image",
+  },
+  {
+    id: 2,
     slug: "account-creation",
     title: "Account Creation & Login",
     description:
@@ -32,7 +50,7 @@ export const steps: DocStep[] = [
     imagePlaceholderText: "Login Image",
   },
   {
-    id: 2,
+    id: 3,
     slug: "document-ingestion",
     title: "Document Ingestion",
     description:
@@ -43,7 +61,7 @@ export const steps: DocStep[] = [
     imagePlaceholderText: "PDF / URL Input Image",
   },
   {
-    id: 3,
+    id: 4,
     slug: "initialization",
     title: "Initialization",
     description:
@@ -54,7 +72,7 @@ export const steps: DocStep[] = [
     imagePlaceholderText: "Loading / Initialization Image",
   },
   {
-    id: 4,
+    id: 5,
     slug: "chat-interaction",
     title: "Chat Interaction",
     description: (
@@ -70,27 +88,29 @@ export const steps: DocStep[] = [
     imagePlaceholderText: "Chatbot Interface Image",
   },
   {
-    id: 5,
+    id: 6,
     slug: "deep-analysis",
     title: "Trigger Deep Analysis",
     description:
-      "Click the 'Deep Analysis' button located under the chatbot's response to investigate the source validity.",
+      "Inspect detailed comparative analysis across retrieval pipelines, chunking configurations, and per-retrieval scores.",
     icon: <Search className="w-6 h-6 text-primary" />,
-    imageAlt: "Close up of Deep Analysis Button",
+    imagePath: deepAnalysisImage,
+    imageAlt: "Deep Analysis Configuration and Pipeline Comparison",
     imagePlaceholderText: "Close Up: Deep Analysis Button",
   },
   {
-    id: 6,
+    id: 7,
     slug: "ground-truth",
     title: "Select Ground Truth Chunks and Provide Response",
     description:
-      "In the Ground Truth view, select the specific text chunk you believe represents the accurate answer and provide your expected response.",
+      "In the Ground Truth view, inspect retrieved text chunks to verify factual accuracy and match against reference ground truth sources.",
     icon: <Database className="w-6 h-6 text-primary" />,
-    imageAlt: "Ground Truth Selection UI",
+    imagePath: groundTruthImage,
+    imageAlt: "Ground Truth Selection and Retrieved Context UI",
     imagePlaceholderText: "Ground Truth Page Image",
   },
   {
-    id: 7,
+    id: 8,
     slug: "hybrid-processing",
     title: "Hybrid Processing",
     description: (
@@ -103,48 +123,52 @@ export const steps: DocStep[] = [
       </>
     ),
     icon: <Activity className="w-6 h-6 text-primary" />,
-    imageAlt: "Background Process Diagram",
+    imagePath: hybridSettingsImage,
+    imageAlt: "Retrieval settings with hybrid search enabled",
     imagePlaceholderText: "Processing: Hybrid + Reranker",
   },
   {
-    id: 8,
+    id: 9,
     slug: "scoring-results",
     title: "Scoring & Results",
     description:
-      "Receive a relevance score indicating how well the retrieved chunks match your specific query.",
+      "Receive real-time answer relevancy and faithfulness scores indicating how well the retrieved chunks match your specific query.",
     icon: <BarChart className="w-6 h-6 text-primary" />,
-    imagePath: deepAnalysisImage,
-    imageAlt: "Scoring Result UI",
+    imagePath: scoringImage,
+    imageAlt: "Answer with answer relevancy and faithfulness scores",
     imagePlaceholderText: "Relevance Score Display",
   },
   {
-    id: 9,
+    id: 10,
     slug: "sidebar-configuration",
     title: "Sidebar Configuration",
     description:
-      "Use the sidebar to configure advanced settings or prepare to add Ground Truth data for evaluation.",
+      "Use the sidebar to configure advanced settings: toggle multi-hop reasoning, corrective CRAG grading, cross-encoder rerankers, and custom model endpoints.",
     icon: <Settings className="w-6 h-6 text-primary" />,
-    imageAlt: "Sidebar Settings",
+    imagePath: sidebarImage,
+    imageAlt: "Pipeline configuration in the sidebar",
     imagePlaceholderText: "Sidebar Configuration Image",
   },
   {
-    id: 10,
+    id: 11,
     slug: "ground-truth-selection",
     title: "Ground Truth Selection",
     description:
       "In the Ground Truth view, select the specific text chunk you believe represents the accurate answer.",
     icon: <Database className="w-6 h-6 text-primary" />,
+    imagePath: groundTruthImage,
     imageAlt: "Ground Truth Selection UI",
     imagePlaceholderText: "Ground Truth Page Image",
   },
   {
-    id: 11,
+    id: 12,
     slug: "evaluation",
     title: "Evaluation",
     description:
       "Once Ground Truth is established, the evaluation metrics specific to that truth will appear for analysis.",
     icon: <CheckCircle className="w-6 h-6 text-primary" />,
-    imageAlt: "Evaluation Metrics",
+    imagePath: evaluationImage,
+    imageAlt: "Evaluation metrics shown under an answer",
     imagePlaceholderText: "Evaluation Results Image",
   },
 ];
