@@ -616,4 +616,4 @@ The web app surfaces two of these metrics (Faithfulness, Answer Relevancy) live 
 
 ## License
 
-Developed for academic and research purposes. See [LICENSE](LICENSE).
+Released under the [MIT License](LICENSE). Developed for academic and research purposes.
